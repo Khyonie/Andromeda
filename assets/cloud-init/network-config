@@ -1,0 +1,17 @@
+version: 2
+ethernets:
+  primary:
+    match:
+      macaddress: "{mac_triple}"
+    addresses:
+      - {ip}
+    routes:
+      - to: default
+        via: 10.0.0.1
+    nameservers:
+      addresses:
+        - 8.8.8.8
+        - 8.8.4.4
+    dhcp4: {dhcp}
+    dhcp6: false
+    set-name: ens0

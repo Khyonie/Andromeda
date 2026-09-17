@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
 
-use crate::libvirt::libvirt_domain::Empty;
+use crate::libvirt::xml::Empty;
 
 use super::{cpu::Cpu, devices::Devices, features::Features, memory::Memory, os::Os};
 
-/// Domain configuration matching `domain_reference.xml`.
+/// Domain configuration matching `tests/fixtures/domain.xml`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename = "domain")]
 pub struct Domain {

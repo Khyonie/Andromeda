@@ -1,62 +1,23 @@
 use axum::{Json, extract::State, http::StatusCode};
-use serde::Deserialize;
 use sqlx::SqlitePool;
-use virt::domain::Domain;
 
 use crate::{
-    database, libvirt,
+    instances::{self, CreateOutcome},
+    logging::SharedLogger,
     model::{Instance, VmConfig},
-    seed::{self, disk},
-    server::{
-        ApiError, AppState,
-        log::{OperationLog, Severity, SharedLogger},
-    },
 };
 
-fn operation_error(
-    operation: &OperationLog,
-    status: StatusCode,
-    error: impl std::fmt::Display,
-) -> ApiError {
-    let severity = if status.is_server_error() {
-        Severity::ERROR
-    } else {
-        Severity::WARNING
-    };
-    operation.failure(severity, &error);
-    ApiError {
-        status,
-        message: error.to_string(),
-    }
-}
-
-async fn lookup_instance(
-    database: &SqlitePool,
-    id: &str,
-    operation: &mut OperationLog,
-) -> Result<Instance, ApiError> {
-    operation.step("Looking up instance in database");
-    database::get_domain_by_id(database, id)
-        .await
-        .map_err(|e| operation_error(operation, StatusCode::INTERNAL_SERVER_ERROR, e))?
-        .ok_or_else(|| operation_error(operation, StatusCode::NOT_FOUND, "No such instance"))
-}
-
-#[derive(Deserialize)]
-pub struct GetInstanceRequest {
-    id: String,
-}
+use super::{error::ApiError, requests::InstanceRequest, state::AppState};
 
 // GET /api/instance with a JSON body: {"id": "<instance UUID>"}
 pub(super) async fn get_instance(
     State(database): State<SqlitePool>,
     State(logger): State<SharedLogger>,
-    Json(request): Json<GetInstanceRequest>,
+    Json(request): Json<InstanceRequest>,
 ) -> Result<Json<Instance>, ApiError> {
-    let mut operation = OperationLog::new(logger, "get", Some(&request.id));
-    let instance = lookup_instance(&database, &request.id, &mut operation).await?;
-    operation.info("Completed: returning instance data");
-    Ok(Json(instance))
+    Ok(Json(
+        instances::get_instance(&database, logger, &request.id).await?,
+    ))
 }
 
 // GET /api/instance/ids
@@ -64,13 +25,7 @@ pub(super) async fn get_instance_ids(
     State(database): State<SqlitePool>,
     State(logger): State<SharedLogger>,
 ) -> Result<Json<Vec<String>>, ApiError> {
-    let mut operation = OperationLog::new(logger, "list", None);
-    operation.step("Reading instance IDs from database");
-    let ids = database::get_instance_ids(&database)
-        .await
-        .map_err(|e| operation_error(&operation, StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    operation.info(format!("Completed: returning {} instance IDs", ids.len()));
-    Ok(Json(ids))
+    Ok(Json(instances::get_instance_ids(&database, logger).await?))
 }
 
 // PUT /api/instance
@@ -78,164 +33,36 @@ pub(super) async fn create_instance(
     State(state): State<AppState>,
     Json(config): Json<VmConfig>,
 ) -> Result<StatusCode, ApiError> {
-    let mut operation = OperationLog::new(
-        state.logger.clone(),
-        "create",
-        Some(&config.instance.hostname),
-    );
-    if state.flags.dry_run {
-        operation.info(
-            "Dry run: disk commands, domain definition, and database insertion will be skipped",
-        );
+    match state.instances.create(config).await? {
+        CreateOutcome::Created => Ok(StatusCode::OK),
+        CreateOutcome::DryRun => Ok(StatusCode::ACCEPTED),
     }
-    operation.step("Validating instance paths");
-    let paths = state
-        .paths
-        .instance(&config.instance.hostname)
-        .map_err(|e| operation_error(&operation, StatusCode::BAD_REQUEST, e))?;
-    operation.step("Generating cloud-init data");
-    let user_data = seed::user_seed(&config);
-    let network_config = seed::network_config_seed(&config);
-    let meta_data = seed::metadata_seed(&config);
-
-    operation.step("Writing temporary seed files");
-    let seeds = seed::SeedFiles::write(&user_data, &network_config, &meta_data, &operation)
-        .map_err(|e| operation_error(&operation, StatusCode::INTERNAL_SERVER_ERROR, e))?;
-
-    operation.step("Preparing instance disk");
-    disk::create_image(&paths, config.instance.disk_size, &state.flags, &operation)
-        .map_err(|e| operation_error(&operation, StatusCode::INTERNAL_SERVER_ERROR, e))?;
-
-    operation.step("Preparing cloud-init ISO");
-    disk::create_iso(&paths, &seeds, &state.flags, &operation)
-        .map_err(|e| operation_error(&operation, StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    drop(seeds);
-
-    operation.step("Generating domain XML");
-    let (xml, id) = libvirt::generate_domain(&config, &paths)
-        .map_err(|e| operation_error(&operation, StatusCode::INTERNAL_SERVER_ERROR, e))?;
-
-    if state.flags.dry_run {
-        operation.info(format!(
-            "Completed dry run: would define and register domain with UUID {id}"
-        ));
-        return Ok(StatusCode::ACCEPTED);
-    }
-
-    operation.step("Defining libvirt domain");
-    Domain::define_xml(&state.qemu, &xml)
-        .map_err(|e| operation_error(&operation, StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    operation.info(format!("Defined domain with UUID {id}"));
-
-    operation.step("Inserting instance into database");
-    sqlx::query(
-        r#"
-        INSERT INTO instances (
-            id, hostname, memory_mib, vcpus, mac_address,
-            ipv4_address, remote_port, service_port
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        "#,
-    )
-    .bind(id.to_string())
-    .bind(config.instance.hostname)
-    .bind(config.instance.memory as u32)
-    .bind(config.instance.vcpus)
-    .bind(config.networking.mac)
-    .bind(config.networking.ip)
-    .bind(config.networking.remote_port)
-    .bind(config.networking.service_port)
-    .execute(&state.database)
-    .await
-    .map_err(|e| operation_error(&operation, StatusCode::INTERNAL_SERVER_ERROR, e))?;
-
-    operation.info(format!("Completed: registered new domain with UUID {id}"));
-    Ok(StatusCode::OK)
-}
-
-#[derive(Deserialize)]
-pub struct DeleteInstanceRequest {
-    id: String,
 }
 
 // DELETE /api/instance
 pub(super) async fn delete_instance(
     State(state): State<AppState>,
-    Json(request): Json<DeleteInstanceRequest>,
+    Json(request): Json<InstanceRequest>,
 ) -> Result<StatusCode, ApiError> {
-    let mut operation = OperationLog::new(state.logger.clone(), "delete", Some(&request.id));
-    let instance = lookup_instance(&state.database, &request.id, &mut operation).await?;
-    operation.step("Looking up libvirt domain");
-    let domain = instance
-        .get_domain(&state.qemu)
-        .map_err(|e| operation_error(&operation, StatusCode::INTERNAL_SERVER_ERROR, e))?;
-
-    operation.step("Checking whether domain is active");
-    if domain
-        .is_active()
-        .map_err(|e| operation_error(&operation, StatusCode::INTERNAL_SERVER_ERROR, e))?
-    {
-        return Err(operation_error(
-            &operation,
-            StatusCode::CONFLICT,
-            "Domain is currently active. Destroy it before attempting undefine.",
-        ));
-    }
-
-    operation.step("Undefining libvirt domain");
-    domain
-        .undefine()
-        .map_err(|e| operation_error(&operation, StatusCode::INTERNAL_SERVER_ERROR, e))?;
-
-    operation.step("Deleting instance from database");
-    database::delete_instance_by_id(&state.database, &request.id)
-        .await
-        .map_err(|e| operation_error(&operation, StatusCode::INTERNAL_SERVER_ERROR, e))?;
-
-    operation.info("Completed: instance deleted");
+    state.instances.delete(&request.id).await?;
     Ok(StatusCode::OK)
-}
-
-#[derive(Deserialize)]
-pub struct StartInstanceRequest {
-    id: String,
 }
 
 // POST /api/instance/start
 pub(super) async fn start_instance(
     State(state): State<AppState>,
-    Json(request): Json<StartInstanceRequest>,
+    Json(request): Json<InstanceRequest>,
 ) -> Result<StatusCode, ApiError> {
-    let mut operation = OperationLog::new(state.logger.clone(), "start", Some(&request.id));
-    let instance = lookup_instance(&state.database, &request.id, &mut operation).await?;
-    operation.step("Looking up libvirt domain");
-    let domain = instance
-        .get_domain(&state.qemu)
-        .map_err(|e| operation_error(&operation, StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    operation.step("Starting libvirt domain");
-    domain
-        .create()
-        .map_err(|e| operation_error(&operation, StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    operation.info("Completed: instance started");
+    state.instances.start(&request.id).await?;
     Ok(StatusCode::ACCEPTED)
 }
 
 // POST /api/instance/stop
 pub(super) async fn stop_instance(
     State(state): State<AppState>,
-    Json(request): Json<StartInstanceRequest>,
+    Json(request): Json<InstanceRequest>,
 ) -> Result<StatusCode, ApiError> {
-    let mut operation = OperationLog::new(state.logger.clone(), "stop", Some(&request.id));
-    let instance = lookup_instance(&state.database, &request.id, &mut operation).await?;
-    operation.step("Looking up libvirt domain");
-    let domain = instance
-        .get_domain(&state.qemu)
-        .map_err(|e| operation_error(&operation, StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    operation.step("Stopping libvirt domain");
-    domain
-        .destroy()
-        .map_err(|e| operation_error(&operation, StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    operation.info("Completed: instance stopped");
+    state.instances.stop(&request.id).await?;
     Ok(StatusCode::ACCEPTED)
 }
 
@@ -251,7 +78,7 @@ mod tests {
     use sqlx::sqlite::SqlitePoolOptions;
 
     use super::*;
-    use crate::server::log::Logger;
+    use crate::logging::Logger;
 
     #[tokio::test]
     async fn lookup_failures_log_the_step_without_reporting_completion() {
@@ -264,7 +91,7 @@ mod tests {
         let response = get_instance(
             State(database.clone()),
             State(logger.clone()),
-            Json(GetInstanceRequest {
+            Json(InstanceRequest {
                 id: "missing".into(),
             }),
         )
@@ -276,7 +103,7 @@ mod tests {
         let response = get_instance(
             State(database.clone()),
             State(logger.clone()),
-            Json(GetInstanceRequest {
+            Json(InstanceRequest {
                 id: "missing".into(),
             }),
         )
@@ -294,8 +121,8 @@ mod tests {
             assert!(request[2].contains("Looking up instance in database failed:"));
             assert!(request.iter().all(|entry| !entry.contains("Completed")));
         }
-        assert!(entries[2].contains("ERROR"));
-        assert!(entries[5].contains("WARNING"));
+        assert!(entries[2].contains("[ Error ]"));
+        assert!(entries[5].contains("[ Warning ]"));
     }
 
     #[tokio::test]
@@ -357,7 +184,7 @@ mod tests {
             .header(CONTENT_TYPE, "application/json")
             .body(Body::from(body.to_owned()))
             .unwrap();
-        match Json::<GetInstanceRequest>::from_request(request, &()).await {
+        match Json::<InstanceRequest>::from_request(request, &()).await {
             Ok(request) => get_instance(State(database.clone()), State(Logger::shared()), request)
                 .await
                 .into_response(),

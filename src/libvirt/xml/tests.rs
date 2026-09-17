@@ -8,7 +8,7 @@ use quick_xml::{Reader, events::Event};
 
 use super::*;
 
-const REFERENCE: &str = include_str!("../../../domain_reference.xml");
+const REFERENCE: &str = include_str!("../../../tests/fixtures/domain.xml");
 
 fn reference_domain() -> Domain {
     let mut domain = Domain::new("vm-alice", 512, 1);
@@ -140,7 +140,7 @@ fn text_and_attributes_are_escaped() {
 
 /// Optional external validation; no daemon, image files, or VM is needed.
 #[test]
-#[ignore = "requires xmllint and libvirt's domain.rng; see domain/README.md"]
+#[ignore = "requires xmllint and libvirt's domain.rng; see README.md"]
 fn generated_reference_validates_against_libvirt_schema() {
     let schema = std::env::var("LIBVIRT_DOMAIN_SCHEMA")
         .unwrap_or_else(|_| "/usr/share/libvirt/schemas/domain.rng".into());

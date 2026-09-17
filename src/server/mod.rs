@@ -1,103 +1,58 @@
+use anyhow::{Context, Result};
 use axum::{
     Router,
-    extract::FromRef,
-    http::StatusCode,
-    response::{IntoResponse, Response},
-    routing::{delete, get, post, put},
+    routing::{get, post},
 };
-use sqlx::SqlitePool;
 use tokio::net::TcpListener;
-use virt::connect::Connect;
 
 use crate::{
-    Flags,
-    paths::StoragePaths,
-    server::log::{Severity, SharedLogger},
+    instances::InstanceService,
+    logging::{self as log, Severity, SharedLogger},
 };
 
+mod error;
 mod instance;
-pub mod log;
+mod requests;
+mod state;
 
-pub const BIND_ADDRESS: &str = "0.0.0.0:9966";
+use state::AppState;
 
-#[derive(Clone)]
-pub(crate) struct AppState {
-    qemu: Connect,
-    flags: Flags,
-    database: SqlitePool,
-    logger: SharedLogger,
-    paths: StoragePaths,
-}
-
-impl FromRef<AppState> for SqlitePool {
-    fn from_ref(state: &AppState) -> Self {
-        state.database.clone()
-    }
-}
-
-impl FromRef<AppState> for SharedLogger {
-    fn from_ref(state: &AppState) -> Self {
-        state.logger.clone()
-    }
-}
-
-pub(crate) struct ApiError {
-    pub status: StatusCode,
-    pub message: String,
-}
-
-impl IntoResponse for ApiError {
-    fn into_response(self) -> Response {
-        (self.status, self.message).into_response()
-    }
-}
-
-pub async fn start_server(
-    flags: Flags,
-    database: SqlitePool,
-    paths: StoragePaths,
-    logger: SharedLogger,
-) -> Result<(), String> {
-    log::log_message(&logger, Severity::INFO, "Connecting to qemu:///system");
-    let qemu = Connect::open(Some("qemu:///system"))
-        .map_err(|e| format!("Failed to connect to qemu: {e}"))?;
-    let state = AppState {
-        qemu,
-        flags,
-        database,
-        paths,
-        logger: logger.clone(),
-    };
-
-    let router = Router::new()
-        .route("/api/instance", get(instance::get_instance))
+fn router(instances: InstanceService) -> Router {
+    Router::new()
+        .route(
+            "/api/instance",
+            get(instance::get_instance)
+                .put(instance::create_instance)
+                .delete(instance::delete_instance),
+        )
         .route("/api/instance/ids", get(instance::get_instance_ids))
-        .route("/api/instance", put(instance::create_instance))
-        .route("/api/instance", delete(instance::delete_instance))
         .route("/api/instance/start", post(instance::start_instance))
         .route("/api/instance/stop", post(instance::stop_instance))
-        .with_state(state);
+        .with_state(AppState { instances })
+}
 
+pub async fn start_server(bind_address: &str, instances: InstanceService) -> Result<()> {
+    let logger = instances.logger.clone();
+    let router = router(instances);
     log::log_message(
         &logger,
-        Severity::INFO,
-        format!("Binding management server to {BIND_ADDRESS}"),
+        Severity::Info,
+        format!("Binding management server to {bind_address}"),
     );
-    let listener = TcpListener::bind(BIND_ADDRESS)
+    let listener = TcpListener::bind(bind_address)
         .await
-        .map_err(|error| format!("Failed to bind server to {BIND_ADDRESS}: {error}"))?;
+        .with_context(|| format!("Failed to bind server to {bind_address}"))?;
 
     log::log_message(
         &logger,
-        Severity::INFO,
+        Severity::Info,
         "Andromeda management server started",
     );
     axum::serve(listener, router)
         .with_graceful_shutdown(shutdown_signal(logger.clone()))
         .await
-        .map_err(|e| format!("Failed to start server: {e}"))?;
-
-    log::log_message(&logger, Severity::INFO, "Management server stopped");
+        .context("Failed to run server")?;
+    log::log_message(&logger, Severity::Info, "Management server stopped");
     Ok(())
 }
 
@@ -105,13 +60,13 @@ async fn shutdown_signal(logger: SharedLogger) {
     if let Err(error) = tokio::signal::ctrl_c().await {
         log::log_message(
             &logger,
-            Severity::ERROR,
+            Severity::Error,
             format!("Failed to listen for shutdown signal: {error}"),
         );
     } else {
         log::log_message(
             &logger,
-            Severity::INFO,
+            Severity::Info,
             "Shutdown requested; waiting for active requests",
         );
     }

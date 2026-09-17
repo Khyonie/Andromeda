@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use sqlx::prelude::FromRow;
-use virt::{connect::Connect, domain::Domain, error::Error};
 
 #[derive(Deserialize, Serialize)]
 pub struct VmConfig {
@@ -35,7 +34,7 @@ pub struct InstanceConfig {
 
 #[derive(FromRow, Serialize)]
 pub struct Instance {
-    id: String,
+    pub(crate) id: String,
     hostname: String,
     memory_mib: u32,
     vcpus: u32,
@@ -43,11 +42,4 @@ pub struct Instance {
     ipv4_address: String,
     remote_port: u16,
     service_port: u16,
-}
-
-impl Instance {
-    /// Look up the libvirt domain by this instance's stored UUID.
-    pub fn get_domain(&self, qemu: &Connect) -> Result<Domain, Error> {
-        Domain::lookup_by_uuid_string(qemu, &self.id)
-    }
 }

@@ -2,7 +2,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
-use crate::{Flags, paths::InstancePaths, seed::SeedFiles, server::log::OperationLog};
+use crate::{cloud_init::SeedFiles, config::Flags, logging::OperationLog, paths::InstancePaths};
 
 pub(crate) fn create_image(
     paths: &InstancePaths,
@@ -79,7 +79,7 @@ mod tests {
                 dry_run: false,
                 update_image: false,
             },
-            &OperationLog::new(crate::server::log::Logger::shared(), "test", None),
+            &OperationLog::new(crate::logging::Logger::shared(), "test", None),
         )
         .unwrap_err();
         let message = error.to_string();
@@ -89,7 +89,7 @@ mod tests {
 
     #[test]
     fn dry_run_does_not_launch_commands() {
-        let logger = crate::server::log::Logger::shared();
+        let logger = crate::logging::Logger::shared();
         run(
             &mut Command::new("/nonexistent/andromeda-test-command"),
             &Flags {

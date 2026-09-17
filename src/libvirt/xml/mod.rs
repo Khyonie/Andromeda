@@ -1,4 +1,4 @@
-//! Domain XML matching the project's `domain_reference.xml`.
+//! Domain XML matching `tests/fixtures/domain.xml`.
 //!
 //! This models guest configuration, not installation orchestration: downloading
 //! media, creating volumes, and generating cloud-init data happen separately.
@@ -7,10 +7,10 @@
 //! from the reference; libvirt validates values when defining the domain.
 //! Deserialization supports this subset only; unmodeled XML is not preserved.
 //!
-//! See `README.md` in this directory for a complete construction example.
+//! See the root `README.md` for the optional libvirt schema validation command.
 //! Reference: <https://libvirt.org/formatdomain.html>.
 
-// The binary does not consume the model yet; these types are its construction API.
+// Public XML types provide a construction API beyond the fields used by provisioning.
 #![allow(dead_code, unused_imports)]
 
 pub mod common;

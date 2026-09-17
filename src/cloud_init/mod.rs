@@ -4,16 +4,14 @@ use anyhow::Result;
 use uuid::Uuid;
 
 use crate::{
+    logging::{OperationLog, Severity},
     macros::interpolate_str,
     model::VmConfig,
-    server::log::{OperationLog, Severity},
 };
 
-pub mod disk;
-
-const USER_DATA_SEED: &str = include_str!("../../seeds/user-data");
-const NETWORK_CONFIG_SEED: &str = include_str!("../../seeds/network-config");
-const META_DATA_SEED: &str = include_str!("../../seeds/meta-data");
+const USER_DATA_SEED: &str = include_str!("../../assets/cloud-init/user-data");
+const NETWORK_CONFIG_SEED: &str = include_str!("../../assets/cloud-init/network-config");
+const META_DATA_SEED: &str = include_str!("../../assets/cloud-init/meta-data");
 const ADMIN_KEY: &str = include_str!("../../keys/khyonie_id_ed25519.pub");
 
 pub fn user_seed(config: &VmConfig) -> String {
@@ -86,7 +84,7 @@ impl Drop for SeedFiles {
         ));
         if let Err(error) = fs::remove_dir_all(&self.directory) {
             self.operation.message(
-                Severity::WARNING,
+                Severity::Warning,
                 format!(
                     "Failed to remove seed workspace {}: {error}",
                     self.directory.display()
@@ -106,7 +104,7 @@ mod tests {
 
     #[test]
     fn seed_workspaces_are_private_isolated_and_cleaned_up() {
-        let operation = OperationLog::new(crate::server::log::Logger::shared(), "test", None);
+        let operation = OperationLog::new(crate::logging::Logger::shared(), "test", None);
         let first =
             SeedFiles::write("first user", "first network", "first metadata", &operation).unwrap();
         let second = SeedFiles::write(

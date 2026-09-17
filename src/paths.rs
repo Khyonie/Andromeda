@@ -3,23 +3,38 @@ use std::path::{Component, Path, PathBuf};
 use anyhow::{Result, ensure};
 
 const LIBVIRT_IMAGES: &str = "/var/lib/libvirt/images";
+const APPLICATION_DATA: &str = "/var/lib/andromeda";
 const ARCH_CLOUD_IMAGE: &str = "Arch-Linux-x86_64-cloudimg.qcow2";
 
 /// The storage layout shared by preflight, image creation, and domain XML.
 #[derive(Clone)]
 pub struct StoragePaths {
     root: PathBuf,
+    data_root: PathBuf,
 }
 
 impl Default for StoragePaths {
     fn default() -> Self {
         Self {
             root: PathBuf::from(LIBVIRT_IMAGES),
+            data_root: PathBuf::from(APPLICATION_DATA),
         }
     }
 }
 
 impl StoragePaths {
+    pub fn data_directory(&self) -> &Path {
+        &self.data_root
+    }
+
+    pub fn database(&self) -> PathBuf {
+        self.data_root.join("andromeda.db")
+    }
+
+    pub fn logs(&self) -> PathBuf {
+        self.data_root.join("logs")
+    }
+
     pub fn templates(&self) -> PathBuf {
         self.root.join("templates")
     }
@@ -89,6 +104,7 @@ mod tests {
     fn domain_xml_uses_the_supplied_storage_layout() {
         let storage = StoragePaths {
             root: PathBuf::from("/custom storage/images & templates"),
+            ..StoragePaths::default()
         };
         let paths = storage.instance("vm-alice").unwrap();
         let config = crate::model::VmConfig {
@@ -101,7 +117,7 @@ mod tests {
                 dhcp: true,
                 mac: "52:54:00:10:00:01".into(),
                 remote_port: 22,
-                service_port: 25565
+                service_port: 25565,
             },
             instance: crate::model::InstanceConfig {
                 hostname: "vm-alice".into(),
@@ -111,7 +127,7 @@ mod tests {
             },
         };
         let (xml, _) = crate::libvirt::generate_domain(&config, &paths).unwrap();
-        let domain: crate::libvirt::libvirt_domain::Domain = quick_xml::de::from_str(&xml).unwrap();
+        let domain: crate::libvirt::xml::Domain = quick_xml::de::from_str(&xml).unwrap();
         assert_eq!(Path::new(&domain.devices.disks[0].source.file), paths.disk);
         assert_eq!(
             Path::new(&domain.devices.disks[1].source.file),

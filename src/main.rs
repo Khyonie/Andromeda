@@ -1,76 +1,68 @@
-use std::process::exit;
+use std::process::ExitCode;
+
+use anyhow::Result;
 
 use crate::{
-    paths::StoragePaths,
-    server::log::{self, Logger, Severity, SharedLogger},
+    config::Config,
+    instances::InstanceService,
+    logging::{Logger, Severity, SharedLogger},
 };
 
+mod cloud_init;
+mod config;
 mod database;
-mod env;
+mod instances;
 mod libvirt;
+mod logging;
 mod macros;
 mod model;
 mod paths;
-mod seed;
 mod server;
-
-#[derive(Clone)]
-pub struct Flags {
-    update_image: bool,
-    dry_run: bool,
-}
+mod startup;
+mod storage;
 
 #[tokio::main]
-async fn main() {
+async fn main() -> ExitCode {
     let logger = Logger::shared();
-    let flags = parse_args(&logger);
-
-    let paths = StoragePaths::default();
-    env::preflight_check(&flags, &paths, &logger);
-    let database = match env::ensure_database(&logger).await {
-        Ok(database) => database,
+    let config = match Config::from_args() {
+        Ok(config) => config,
         Err(error) => {
-            log::log_message(
-                &logger,
-                Severity::FATAL,
-                format!("Failed to open database: {error}"),
-            );
-            exit(1)
+            logging::log_message(&logger, Severity::Fatal, error.to_string());
+            return ExitCode::FAILURE;
         }
     };
-
-    if let Err(e) = server::start_server(flags, database, paths, logger.clone()).await {
-        log::log_message(
-            &logger,
-            Severity::FATAL,
-            format!("Failed to start server: {e}"),
-        );
-        exit(1)
-    };
-}
-
-fn parse_args(logger: &SharedLogger) -> Flags {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-
-    let mut flags = Flags {
-        update_image: false,
-        dry_run: false,
-    };
-
-    for a in args {
-        match a.as_str() {
-            "--dry" => flags.dry_run = true,
-            "--update-image" => flags.update_image = true,
-            _ => {
-                log::log_message(
-                    logger,
-                    Severity::FATAL,
-                    format!("Unknown flag {a}, valid flags are [ --dry, --update-image ]"),
-                );
-                exit(1)
-            }
-        }
+    let result = run(&config, &logger).await;
+    if let Err(error) = &result {
+        logging::log_message(&logger, Severity::Fatal, format!("{error:#}"));
     }
 
-    flags
+    // Save after the server drains requests, including their final progress messages.
+    let log_folder = config.paths.logs();
+    if log_folder.is_dir()
+        && let Err(error) = logging::finalize_log(&logger, &log_folder)
+    {
+        logging::log_message(
+            &logger,
+            Severity::Error,
+            format!("Failed to save log: {error}"),
+        );
+    }
+
+    if result.is_ok() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+async fn run(config: &Config, logger: &SharedLogger) -> Result<()> {
+    let resources = startup::initialize(config, logger).await?;
+    let instances = InstanceService::new(
+        resources.database,
+        resources.qemu,
+        config.flags.clone(),
+        config.paths.clone(),
+        logger.clone(),
+    );
+    server::start_server(&config.bind_address, instances).await
 }
