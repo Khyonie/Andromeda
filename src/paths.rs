@@ -6,6 +6,11 @@ const LIBVIRT_IMAGES: &str = "/var/lib/libvirt/images";
 const APPLICATION_DATA: &str = "/var/lib/andromeda";
 const ARCH_CLOUD_IMAGE: &str = "Arch-Linux-x86_64-cloudimg.qcow2";
 
+/// Read editable guest defaults from the source checkout, regardless of launch directory.
+pub fn skeleton_directory() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/skel")
+}
+
 /// The storage layout shared by preflight, image creation, and domain XML.
 #[derive(Clone)]
 pub struct StoragePaths {
@@ -108,7 +113,7 @@ mod tests {
         };
         let paths = storage.instance("vm-alice").unwrap();
         let config = crate::model::VmConfig {
-            user: crate::model::UserConfig {
+            user: crate::model::GuestUserConfig {
                 name: "alice".into(),
                 key: String::new(),
             },

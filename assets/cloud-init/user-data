@@ -7,20 +7,14 @@ packages:
   - sudo
   - qemu-guest-agent
   - fish
+  - micro
 users:
   - name: {user_name}
-    shell: /bin/bash
+    shell: /usr/bin/fish
     lock_passwd: true
     ssh_authorized_keys:
       - {user_key}
-  - name: khyonie
-    shell: /usr/bin/fish
-    groups:
-      - wheel
-    sudo: ALL=(ALL) NOPASSWD:ALL
-    lock_passwd: true
-    ssh_authorized_keys:
-      - {admin_key}
+{sysadmin_user}
 ssh_pwauth: false
 disable_root: true
 write_files:

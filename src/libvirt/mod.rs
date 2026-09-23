@@ -11,6 +11,7 @@ use crate::{
 
 const ANDROMEDA_USERS_NETWORK: &str = include_str!("../../assets/libvirt/andromeda-users.xml");
 
+pub mod metrics;
 pub mod xml;
 
 pub fn generate_domain(config: &VmConfig, paths: &InstancePaths) -> Result<(String, Uuid)> {
@@ -76,6 +77,10 @@ pub fn start_domain(domain: &LiveDomain) -> Result<(), Error> {
 }
 
 pub fn stop_domain(domain: &LiveDomain) -> Result<(), Error> {
+    domain.shutdown().map(|_| ())
+}
+
+pub fn destroy_domain(domain: &LiveDomain) -> Result<(), Error> {
     domain.destroy().map(|_| ())
 }
 

@@ -7,7 +7,7 @@ ethernets:
       - {ip}
     routes:
       - to: default
-        via: 10.0.0.1
+        via: {gateway_ip}
     nameservers:
       addresses:
         - 8.8.8.8

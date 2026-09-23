@@ -8,6 +8,7 @@ use crate::{
     logging::{Logger, Severity, SharedLogger},
 };
 
+mod auth;
 mod cloud_init;
 mod config;
 mod database;
@@ -18,6 +19,7 @@ mod macros;
 mod model;
 mod paths;
 mod server;
+mod settings;
 mod startup;
 mod storage;
 
@@ -57,12 +59,20 @@ async fn main() -> ExitCode {
 
 async fn run(config: &Config, logger: &SharedLogger) -> Result<()> {
     let resources = startup::initialize(config, logger).await?;
+    let settings = settings::SettingsService::initialize(
+        resources.database.clone(),
+        config.gateway_ip,
+        logger.clone(),
+    )
+    .await?;
     let instances = InstanceService::new(
-        resources.database,
+        resources.database.clone(),
         resources.qemu,
         config.flags.clone(),
         config.paths.clone(),
+        settings.clone(),
         logger.clone(),
     );
-    server::start_server(&config.bind_address, instances).await
+    let auth = auth::AuthService::new(resources.database, config.auth.clone(), logger.clone());
+    server::start_server(&config.bind_address, instances, auth, settings).await
 }

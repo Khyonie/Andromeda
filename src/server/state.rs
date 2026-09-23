@@ -6,6 +6,8 @@ use crate::{instances::InstanceService, logging::SharedLogger};
 #[derive(Clone)]
 pub(super) struct AppState {
     pub instances: InstanceService,
+    pub auth: crate::auth::AuthService,
+    pub settings: crate::settings::SettingsService,
 }
 
 impl FromRef<AppState> for SqlitePool {

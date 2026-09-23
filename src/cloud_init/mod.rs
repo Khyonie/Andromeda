@@ -1,4 +1,4 @@
-use std::{fs, os::unix::fs::DirBuilderExt, path::PathBuf};
+use std::{fs, net::Ipv4Addr, os::unix::fs::DirBuilderExt, path::PathBuf};
 
 use anyhow::Result;
 use uuid::Uuid;
@@ -12,24 +12,33 @@ use crate::{
 const USER_DATA_SEED: &str = include_str!("../../assets/cloud-init/user-data");
 const NETWORK_CONFIG_SEED: &str = include_str!("../../assets/cloud-init/network-config");
 const META_DATA_SEED: &str = include_str!("../../assets/cloud-init/meta-data");
-const ADMIN_KEY: &str = include_str!("../../keys/khyonie_id_ed25519.pub");
 
-pub fn user_seed(config: &VmConfig) -> String {
+pub fn user_seed(config: &VmConfig, sysadmin_ssh_key: &str) -> String {
+    let sysadmin_user = if sysadmin_ssh_key.is_empty() {
+        String::new()
+    } else {
+        // JSON string quoting is valid YAML and keeps key comments as scalar data.
+        let key = serde_json::to_string(sysadmin_ssh_key).expect("string serialization");
+        format!(
+            "  - name: sysadmin\n    shell: /usr/bin/fish\n    groups: [wheel]\n    sudo: ALL=(ALL) NOPASSWD:ALL\n    lock_passwd: true\n    ssh_authorized_keys:\n      - {key}"
+        )
+    };
     interpolate_str!(
         USER_DATA_SEED,
         vm = config.instance.hostname,
         user_name = config.user.name,
         user_key = config.user.key,
-        admin_key = ADMIN_KEY
+        sysadmin_user = sysadmin_user
     )
 }
 
-pub fn network_config_seed(config: &VmConfig) -> String {
+pub fn network_config_seed(config: &VmConfig, gateway_ip: Ipv4Addr) -> String {
     interpolate_str!(
         NETWORK_CONFIG_SEED,
         dhcp = config.networking.dhcp,
         mac_triple = config.networking.mac,
-        ip = config.networking.ip
+        ip = config.networking.ip,
+        gateway_ip = gateway_ip
     )
 }
 

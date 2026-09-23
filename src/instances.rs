@@ -1,7 +1,18 @@
 //! Instance workflows shared by the HTTP layer and future application entry points.
 
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex, Weak},
+};
+
+use crate::auth::{
+    Account,
+    permissions::{self, Permission},
+};
 use sqlx::SqlitePool;
+use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 use virt::connect::Connect;
+use virt::error::ErrorNumber;
 
 use crate::{
     cloud_init,
@@ -9,14 +20,16 @@ use crate::{
     database::instances as database,
     libvirt,
     logging::{OperationLog, Severity, SharedLogger},
-    model::{Instance, VmConfig},
+    model::{Instance, InstanceView, VmConfig},
     paths::StoragePaths,
+    settings::SettingsService,
     storage,
 };
 
 #[derive(Debug)]
 pub enum ErrorKind {
     InvalidInput,
+    Forbidden,
     NotFound,
     Conflict,
     Internal,
@@ -37,7 +50,7 @@ impl std::fmt::Display for InstanceError {
 impl std::error::Error for InstanceError {}
 
 pub enum CreateOutcome {
-    Created,
+    Created { id: String },
     DryRun,
 }
 
@@ -48,6 +61,9 @@ pub struct InstanceService {
     qemu: Connect,
     flags: Flags,
     paths: StoragePaths,
+    settings: SettingsService,
+    locks: Arc<Mutex<HashMap<String, Weak<AsyncMutex<()>>>>>,
+    metrics: Arc<libvirt::metrics::Metrics>,
 }
 
 fn operation_error(
@@ -82,21 +98,31 @@ async fn lookup_instance(
 pub async fn get_instance(
     database: &SqlitePool,
     logger: SharedLogger,
+    account: &Account,
     id: &str,
-) -> Result<Instance, InstanceError> {
+) -> Result<InstanceView, InstanceError> {
     let mut operation = OperationLog::new(logger, "get", Some(id));
     let instance = lookup_instance(database, id, &mut operation).await?;
+    operation.step("Checking instance access");
+    let role = permissions::require(database, account, id, Permission::View)
+        .await
+        .map_err(|e| operation_error(&operation, e.kind, e.message))?;
     operation.info("Completed: returning instance data");
-    Ok(instance)
+    Ok(InstanceView {
+        instance,
+        role,
+        permissions: role.permissions(),
+    })
 }
 
 pub async fn get_instance_ids(
     database: &SqlitePool,
     logger: SharedLogger,
+    account: &Account,
 ) -> Result<Vec<String>, InstanceError> {
     let mut operation = OperationLog::new(logger, "list", None);
     operation.step("Reading instance IDs from database");
-    let ids = database::get_instance_ids(database)
+    let ids = database::get_instance_ids(database, &account.id)
         .await
         .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?;
     operation.info(format!("Completed: returning {} instance IDs", ids.len()));
@@ -109,6 +135,7 @@ impl InstanceService {
         qemu: Connect,
         flags: Flags,
         paths: StoragePaths,
+        settings: SettingsService,
         logger: SharedLogger,
     ) -> Self {
         Self {
@@ -116,11 +143,112 @@ impl InstanceService {
             qemu,
             flags,
             paths,
+            settings,
             logger,
+            locks: Arc::default(),
+            metrics: Arc::default(),
         }
     }
 
-    pub async fn create(&self, config: VmConfig) -> Result<CreateOutcome, InstanceError> {
+    fn lock(
+        &self,
+        hostname: &str,
+        operation: &OperationLog,
+    ) -> Result<OwnedMutexGuard<()>, InstanceError> {
+        let lock = {
+            let mut locks = self.locks.lock().unwrap();
+            locks.retain(|_, lock| lock.strong_count() > 0);
+            let lock = locks
+                .get(hostname)
+                .and_then(Weak::upgrade)
+                .unwrap_or_default();
+            locks.insert(hostname.into(), Arc::downgrade(&lock));
+            lock
+        };
+        lock.try_lock_owned().map_err(|_| operation_error(operation, ErrorKind::Conflict,
+            "Another operation is in progress for this instance. Please try again when it finishes."))
+    }
+
+    async fn locked_instance(
+        &self,
+        id: &str,
+        account: &Account,
+        permission: Permission,
+        operation: &mut OperationLog,
+    ) -> Result<(Instance, OwnedMutexGuard<()>), InstanceError> {
+        let instance = lookup_instance(&self.database, id, operation).await?;
+        let guard = self.lock(&instance.hostname, operation)?;
+        // Recheck after acquiring the lock: a concurrent delete may have finished meanwhile.
+        let instance = lookup_instance(&self.database, id, operation).await?;
+        operation.step("Checking instance access");
+        permissions::require(&self.database, account, id, permission)
+            .await
+            .map_err(|e| operation_error(operation, e.kind, e.message))?;
+        Ok((instance, guard))
+    }
+
+    pub async fn status(
+        &self,
+        account: &Account,
+        id: &str,
+    ) -> Result<libvirt::metrics::InstanceStatus, InstanceError> {
+        let mut operation = OperationLog::new(self.logger.clone(), "status", Some(id));
+        let instance = lookup_instance(&self.database, id, &mut operation).await?;
+        permissions::require(&self.database, account, id, Permission::View).await?;
+        let qemu = self.qemu.clone();
+        let metrics = self.metrics.clone();
+        operation.step("Reading live instance statistics");
+        let status = tokio::task::spawn_blocking(move || metrics.read(&qemu, &instance.id))
+            .await
+            .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?
+            .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?;
+        operation.info("Completed: returning live instance statistics");
+        Ok(status)
+    }
+
+    pub async fn download_disk(
+        &self,
+        account: &Account,
+        id: &str,
+    ) -> Result<storage::DiskExport, InstanceError> {
+        let mut operation = OperationLog::new(self.logger.clone(), "download disk", Some(id));
+        let (instance, guard) = self
+            .locked_instance(id, account, Permission::Download, &mut operation)
+            .await?;
+        operation.step("Checking whether domain is inactive");
+        let domain = libvirt::lookup_domain(&self.qemu, &instance.id)
+            .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?;
+        if libvirt::is_active(&domain)
+            .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?
+        {
+            return Err(operation_error(
+                &operation,
+                ErrorKind::Conflict,
+                "Shut down the instance before downloading its disk.",
+            ));
+        }
+        let paths = self
+            .paths
+            .instance(&instance.hostname)
+            .map_err(|e| operation_error(&operation, ErrorKind::InvalidInput, e))?;
+        let export_root = self.paths.data_directory().join("exports");
+        // Keep the operation lock inside the blocking task even if the HTTP client disconnects.
+        let task_operation = operation.clone();
+        tokio::task::spawn_blocking(move || {
+            let _guard = guard;
+            let mut operation = task_operation;
+            storage::export_disk(&paths, &export_root, &mut operation)
+                .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))
+        })
+        .await
+        .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?
+    }
+
+    pub async fn create(
+        &self,
+        account: &Account,
+        config: VmConfig,
+    ) -> Result<CreateOutcome, InstanceError> {
         let mut operation = OperationLog::new(
             self.logger.clone(),
             "create",
@@ -136,9 +264,39 @@ impl InstanceService {
             .paths
             .instance(&config.instance.hostname)
             .map_err(|e| operation_error(&operation, ErrorKind::InvalidInput, e))?;
+        let _guard = self.lock(&config.instance.hostname, &operation)?;
+        let exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM instances WHERE hostname = ?)")
+                .bind(&config.instance.hostname)
+                .fetch_one(&self.database)
+                .await
+                .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?;
+        if exists
+            || paths.disk.symlink_metadata().is_ok()
+            || paths.seed_iso.symlink_metadata().is_ok()
+        {
+            return Err(operation_error(
+                &operation,
+                ErrorKind::Conflict,
+                "This hostname or its storage already exists. Choose another hostname.",
+            ));
+        }
+        operation.step("Reading guest defaults");
+        let defaults = self
+            .settings
+            .snapshot()
+            .await
+            .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?;
+        if config.user.name == "sysadmin" {
+            return Err(operation_error(
+                &operation,
+                ErrorKind::InvalidInput,
+                "The username sysadmin is reserved for the configured system administrator.",
+            ));
+        }
         operation.step("Generating cloud-init data");
-        let user_data = cloud_init::user_seed(&config);
-        let network_config = cloud_init::network_config_seed(&config);
+        let user_data = cloud_init::user_seed(&config, &defaults.sysadmin_ssh_key);
+        let network_config = cloud_init::network_config_seed(&config, defaults.gateway_ip);
         let meta_data = cloud_init::metadata_seed(&config);
 
         operation.step("Writing temporary seed files");
@@ -172,51 +330,69 @@ impl InstanceService {
         operation.info(format!("Defined domain with UUID {id}"));
 
         operation.step("Inserting instance into database");
-        database::insert_instance(&self.database, &id, &config)
+        database::insert_instance(&self.database, &id, &config, &account.id)
             .await
             .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?;
 
         operation.info(format!("Completed: registered new domain with UUID {id}"));
-        Ok(CreateOutcome::Created)
+        Ok(CreateOutcome::Created { id: id.to_string() })
     }
 
-    pub async fn delete(&self, id: &str) -> Result<(), InstanceError> {
+    pub async fn delete(&self, account: &Account, id: &str) -> Result<(), InstanceError> {
         let mut operation = OperationLog::new(self.logger.clone(), "delete", Some(id));
-        let instance = lookup_instance(&self.database, id, &mut operation).await?;
+        let (instance, _guard) = self
+            .locked_instance(id, account, Permission::Delete, &mut operation)
+            .await?;
+        let paths = self
+            .paths
+            .instance(&instance.hostname)
+            .map_err(|e| operation_error(&operation, ErrorKind::InvalidInput, e))?;
+        operation.step("Validating instance storage");
+        storage::check_instance_files(&paths)
+            .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?;
         operation.step("Looking up libvirt domain");
-        let domain = libvirt::lookup_domain(&self.qemu, &instance.id)
-            .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?;
-
-        operation.step("Checking whether domain is active");
-        if libvirt::is_active(&domain)
-            .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?
-        {
-            return Err(operation_error(
-                &operation,
-                ErrorKind::Conflict,
-                "Domain is currently active. Destroy it before attempting undefine.",
-            ));
+        match libvirt::lookup_domain(&self.qemu, &instance.id) {
+            Ok(domain) => {
+                operation.step("Checking whether domain is active");
+                if libvirt::is_active(&domain)
+                    .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?
+                {
+                    return Err(operation_error(
+                        &operation,
+                        ErrorKind::Conflict,
+                        "Shut down the instance before deleting it.",
+                    ));
+                }
+                operation.step("Undefining libvirt domain");
+                libvirt::undefine_domain(&domain)
+                    .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?;
+            }
+            // Retry cleanup after a partial failure, retaining the SQL record until everything is removed.
+            Err(error) if error.code() == ErrorNumber::NoDomain => {
+                operation.info("Domain already absent; continuing storage cleanup")
+            }
+            Err(error) => return Err(operation_error(&operation, ErrorKind::Internal, error)),
         }
-
-        operation.step("Undefining libvirt domain");
-        libvirt::undefine_domain(&domain)
+        storage::delete_instance_files(&paths, &mut operation)
             .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?;
-
         operation.step("Deleting instance from database");
         database::delete_instance_by_id(&self.database, id)
             .await
             .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?;
-
-        operation.info("Completed: instance deleted");
+        self.metrics.forget(id);
+        operation.info("Completed: instance, disk, and seed ISO deleted");
         Ok(())
     }
 
-    pub async fn start(&self, id: &str) -> Result<(), InstanceError> {
+    pub async fn start(&self, account: &Account, id: &str) -> Result<(), InstanceError> {
         let mut operation = OperationLog::new(self.logger.clone(), "start", Some(id));
-        let instance = lookup_instance(&self.database, id, &mut operation).await?;
+        let (instance, _guard) = self
+            .locked_instance(id, account, Permission::Control, &mut operation)
+            .await?;
         operation.step("Looking up libvirt domain");
         let domain = libvirt::lookup_domain(&self.qemu, &instance.id)
             .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?;
+        self.metrics.forget(id);
         operation.step("Starting libvirt domain");
         libvirt::start_domain(&domain)
             .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?;
@@ -224,14 +400,31 @@ impl InstanceService {
         Ok(())
     }
 
-    pub async fn stop(&self, id: &str) -> Result<(), InstanceError> {
+    pub async fn stop(&self, account: &Account, id: &str) -> Result<(), InstanceError> {
         let mut operation = OperationLog::new(self.logger.clone(), "stop", Some(id));
-        let instance = lookup_instance(&self.database, id, &mut operation).await?;
+        let (instance, _guard) = self
+            .locked_instance(id, account, Permission::Control, &mut operation)
+            .await?;
         operation.step("Looking up libvirt domain");
         let domain = libvirt::lookup_domain(&self.qemu, &instance.id)
             .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?;
         operation.step("Stopping libvirt domain");
         libvirt::stop_domain(&domain)
+            .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?;
+        operation.info("Completed: instance stopped");
+        Ok(())
+    }
+
+    pub async fn destroy(&self, account: &Account, id: &str) -> Result<(), InstanceError> {
+        let mut operation = OperationLog::new(self.logger.clone(), "stop", Some(id));
+        let (instance, _guard) = self
+            .locked_instance(id, account, Permission::Control, &mut operation)
+            .await?;
+        operation.step("Looking up libvirt domain");
+        let domain = libvirt::lookup_domain(&self.qemu, &instance.id)
+            .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?;
+        operation.step("Stopping libvirt domain");
+        libvirt::destroy_domain(&domain)
             .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?;
         operation.info("Completed: instance stopped");
         Ok(())

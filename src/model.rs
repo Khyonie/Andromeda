@@ -3,13 +3,13 @@ use sqlx::prelude::FromRow;
 
 #[derive(Deserialize, Serialize)]
 pub struct VmConfig {
-    pub user: UserConfig,
+    pub user: GuestUserConfig,
     pub networking: NetworkConfig,
     pub instance: InstanceConfig,
 }
 
 #[derive(Deserialize, Serialize)]
-pub struct UserConfig {
+pub struct GuestUserConfig {
     pub name: String,
     pub key: String,
 }
@@ -35,11 +35,20 @@ pub struct InstanceConfig {
 #[derive(FromRow, Serialize)]
 pub struct Instance {
     pub(crate) id: String,
-    hostname: String,
+    pub owner_id: String,
+    pub(crate) hostname: String,
     memory_mib: u32,
     vcpus: u32,
     mac_address: String,
     ipv4_address: String,
     remote_port: u16,
     service_port: u16,
+}
+
+#[derive(Serialize)]
+pub struct InstanceView {
+    #[serde(flatten)]
+    pub instance: Instance,
+    pub role: crate::auth::permissions::Role,
+    pub permissions: crate::auth::permissions::Permissions,
 }

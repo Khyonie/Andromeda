@@ -1,0 +1,29 @@
+/target
+
+.env
+.env.*
+!.env.example
+
+# Local credentials and personal SSH keys.
+/keys/
+*.pem
+*.key
+
+# Runtime data and generated VM media.
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.qcow2
+*.img
+*.iso
+*.log
+/logs/
+
+# Local editor and OS files.
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

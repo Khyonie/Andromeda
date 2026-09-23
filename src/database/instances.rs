@@ -6,14 +6,15 @@ pub async fn insert_instance(
     database: &SqlitePool,
     id: &uuid::Uuid,
     config: &VmConfig,
+    owner_id: &str,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         r#"
         INSERT INTO instances (
             id, hostname, memory_mib, vcpus, mac_address,
-            ipv4_address, remote_port, service_port
+            ipv4_address, remote_port, service_port, owner_id
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#,
     )
     .bind(id.to_string())
@@ -24,6 +25,7 @@ pub async fn insert_instance(
     .bind(&config.networking.ip)
     .bind(config.networking.remote_port)
     .bind(config.networking.service_port)
+    .bind(owner_id)
     .execute(database)
     .await?;
     Ok(())
@@ -37,6 +39,7 @@ pub async fn get_instance_by_id(
         r#"
         SELECT
             id,
+            owner_id,
             hostname,
             memory_mib,
             vcpus,
@@ -53,8 +56,12 @@ pub async fn get_instance_by_id(
     .await
 }
 
-pub async fn get_instance_ids(database: &SqlitePool) -> Result<Vec<String>, sqlx::Error> {
-    sqlx::query_scalar("SELECT id FROM instances ORDER BY id")
+pub async fn get_instance_ids(
+    database: &SqlitePool,
+    user_id: &str,
+) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar("SELECT i.id FROM instances i WHERE i.owner_id = ? OR EXISTS (SELECT 1 FROM instance_members m WHERE m.instance_id = i.id AND m.user_id = ?) ORDER BY i.id")
+        .bind(user_id).bind(user_id)
         .fetch_all(database)
         .await
 }
@@ -80,13 +87,14 @@ mod tests {
             .await
             .unwrap();
         sqlx::migrate!("./migrations").run(&database).await.unwrap();
+        sqlx::query("INSERT INTO users (id, discord_id, username, display_name, created_at, updated_at) VALUES ('test-account', '123', 'test', 'Test', 0, 0)").execute(&database).await.unwrap();
 
         let first_id = uuid::Uuid::new_v4().to_string();
         let second_id = uuid::Uuid::new_v4().to_string();
         for (index, id) in [&first_id, &second_id].into_iter().enumerate() {
             sqlx::query(
-                "INSERT INTO instances (id, hostname, memory_mib, vcpus, mac_address, \
-                 ipv4_address, remote_port, service_port) VALUES (?, ?, 512, 1, ?, ?, ?, ?)",
+                "INSERT INTO instances (owner_id, id, hostname, memory_mib, vcpus, mac_address, \
+                 ipv4_address, remote_port, service_port) VALUES ('test-account', ?, ?, 512, 1, ?, ?, ?, ?)",
             )
             .bind(id)
             .bind(format!("vm-{index}"))

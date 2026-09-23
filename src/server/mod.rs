@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use axum::{
     Router,
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use tokio::net::TcpListener;
 
@@ -10,6 +10,8 @@ use crate::{
     logging::{self as log, Severity, SharedLogger},
 };
 
+mod admin;
+mod auth;
 mod error;
 mod instance;
 mod requests;
@@ -17,23 +19,60 @@ mod state;
 
 use state::AppState;
 
-fn router(instances: InstanceService) -> Router {
-    Router::new()
+fn router(
+    instances: InstanceService,
+    auth: crate::auth::AuthService,
+    settings: crate::settings::SettingsService,
+) -> Router<()> {
+    Router::<AppState>::new()
+        .route("/api/session", get(auth::session))
+        .route("/api/auth/discord", get(auth::login))
+        .route("/api/auth/discord/callback", get(auth::callback))
+        .route("/api/auth/logout", post(auth::logout))
+        .route(
+            "/api/admin/settings",
+            get(admin::get_settings)
+                .put(admin::update_settings)
+                .layer(axum::extract::DefaultBodyLimit::max(32 * 1024)),
+        )
         .route(
             "/api/instance",
-            get(instance::get_instance)
+            get(instance::get_instance_ids)
                 .put(instance::create_instance)
                 .delete(instance::delete_instance),
         )
-        .route("/api/instance/ids", get(instance::get_instance_ids))
+        .route("/api/instance/id", get(instance::get_instance))
+        .route("/api/instance/status", post(instance::get_status))
+        .route("/api/instance/disk", post(instance::download_disk))
         .route("/api/instance/start", post(instance::start_instance))
         .route("/api/instance/stop", post(instance::stop_instance))
-        .with_state(AppState { instances })
+        .route("/api/instance/stop", delete(instance::destroy_instance))
+        .layer(axum::middleware::map_response(
+            |mut response: axum::response::Response| async move {
+                response
+                    .headers_mut()
+                    .insert("cache-control", "no-store".parse().unwrap());
+                response
+                    .headers_mut()
+                    .insert("referrer-policy", "no-referrer".parse().unwrap());
+                response
+            },
+        ))
+        .with_state::<()>(AppState {
+            instances,
+            auth,
+            settings,
+        })
 }
 
-pub async fn start_server(bind_address: &str, instances: InstanceService) -> Result<()> {
+pub async fn start_server(
+    bind_address: &str,
+    instances: InstanceService,
+    auth: crate::auth::AuthService,
+    settings: crate::settings::SettingsService,
+) -> Result<()> {
     let logger = instances.logger.clone();
-    let router = router(instances);
+    let router: Router<()> = router(instances, auth, settings);
     log::log_message(
         &logger,
         Severity::Info,

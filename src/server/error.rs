@@ -13,6 +13,7 @@ pub(super) struct ApiError {
 impl From<InstanceError> for ApiError {
     fn from(error: InstanceError) -> Self {
         let status = match error.kind {
+            ErrorKind::Forbidden => StatusCode::FORBIDDEN,
             ErrorKind::InvalidInput => StatusCode::BAD_REQUEST,
             ErrorKind::NotFound => StatusCode::NOT_FOUND,
             ErrorKind::Conflict => StatusCode::CONFLICT,
