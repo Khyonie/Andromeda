@@ -26,6 +26,8 @@ pub struct NetworkConfig {
 #[derive(Deserialize, Serialize)]
 pub struct InstanceConfig {
     pub hostname: String,
+    #[serde(default)]
+    pub description: String,
     #[serde(rename = "disk-size")]
     pub disk_size: usize,
     pub memory: u64,
@@ -37,6 +39,7 @@ pub struct Instance {
     pub(crate) id: String,
     pub owner_id: String,
     pub(crate) hostname: String,
+    description: String,
     memory_mib: u32,
     vcpus: u32,
     mac_address: String,
@@ -51,4 +54,20 @@ pub struct InstanceView {
     pub instance: Instance,
     pub role: crate::auth::permissions::Role,
     pub permissions: crate::auth::permissions::Permissions,
+}
+
+#[derive(FromRow, Serialize)]
+pub struct InstanceSummary {
+    pub id: String,
+    pub hostname: String,
+    pub description: String,
+    pub remote_port: u16,
+    pub service_port: u16,
+}
+
+#[derive(Serialize)]
+pub struct InstanceListEntry {
+    #[serde(flatten)]
+    pub instance: InstanceSummary,
+    pub state: String,
 }

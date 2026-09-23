@@ -68,6 +68,30 @@ pub fn is_active(domain: &LiveDomain) -> Result<bool, Error> {
     domain.is_active()
 }
 
+/// Read only the power state; overview polling does not query the guest agent.
+pub fn power_state(qemu: &Connect, id: &str) -> Result<&'static str, Error> {
+    let domain = match lookup_domain(qemu, id) {
+        Ok(domain) => domain,
+        Err(error) if error.code() == virt::error::ErrorNumber::NoDomain => return Ok("missing"),
+        Err(error) => return Err(error),
+    };
+    let (state, _) = domain.get_state()?;
+    Ok(state_label(state))
+}
+
+fn state_label(state: u32) -> &'static str {
+    match state {
+        1 => "running",
+        2 => "blocked",
+        3 => "paused",
+        4 => "shutting-down",
+        5 => "shut-off",
+        6 => "crashed",
+        7 => "suspended",
+        _ => "unknown",
+    }
+}
+
 pub fn undefine_domain(domain: &LiveDomain) -> Result<(), Error> {
     domain.undefine().map(|_| ())
 }

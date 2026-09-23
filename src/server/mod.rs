@@ -42,6 +42,7 @@ fn router(
                 .delete(instance::delete_instance),
         )
         .route("/api/instance/id", get(instance::get_instance))
+        .route("/api/instance/summary", get(instance::list_instances))
         .route("/api/instance/status", post(instance::get_status))
         .route("/api/instance/disk", post(instance::download_disk))
         .route("/api/instance/start", post(instance::start_instance))

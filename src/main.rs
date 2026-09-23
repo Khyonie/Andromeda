@@ -23,8 +23,7 @@ mod settings;
 mod startup;
 mod storage;
 
-#[tokio::main]
-async fn main() -> ExitCode {
+fn main() -> ExitCode {
     let logger = Logger::shared();
     let config = match Config::from_args() {
         Ok(config) => config,
@@ -33,6 +32,11 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    run_and_finalize(config, logger)
+}
+
+#[tokio::main]
+async fn run_and_finalize(config: Config, logger: SharedLogger) -> ExitCode {
     let result = run(&config, &logger).await;
     if let Err(error) = &result {
         logging::log_message(&logger, Severity::Fatal, format!("{error:#}"));

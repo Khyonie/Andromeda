@@ -9,7 +9,7 @@ use sqlx::SqlitePool;
 use crate::{
     instances::{self, CreateOutcome},
     logging::SharedLogger,
-    model::{InstanceView, VmConfig},
+    model::{InstanceListEntry, InstanceView, VmConfig},
 };
 
 use super::{auth::CurrentSession, error::ApiError, requests::InstanceRequest, state::AppState};
@@ -35,6 +35,14 @@ pub(super) async fn get_instance_ids(
     Ok(Json(
         instances::get_instance_ids(&database, logger, &session.account).await?,
     ))
+}
+
+// GET /api/instance/summary
+pub(super) async fn list_instances(
+    State(state): State<AppState>,
+    CurrentSession(session): CurrentSession,
+) -> Result<Json<Vec<InstanceListEntry>>, ApiError> {
+    Ok(Json(state.instances.list(&session.account).await?))
 }
 
 // PUT /api/instance
@@ -337,6 +345,7 @@ mod tests {
                 "role": "owner",
                 "permissions": { "view": true, "control": true, "download": true, "delete": true, "manage_access": true },
                 "hostname": "vm-test",
+                "description": "",
                 "memory_mib": 512,
                 "vcpus": 2,
                 "mac_address": "52:54:00:00:00:01",

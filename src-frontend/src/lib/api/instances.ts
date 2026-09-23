@@ -7,6 +7,7 @@ export interface Instance {
 	role: 'owner' | 'operator' | 'viewer';
 	permissions: Permissions;
 	hostname: string;
+	description: string;
 	memory_mib: number;
 	vcpus: number;
 	mac_address: string;
@@ -18,7 +19,30 @@ export interface Instance {
 export interface VmConfig {
 	user: { name: string; key: string };
 	networking: { ip: string; dhcp: boolean; mac: string; remote_port: number; service_port: number };
-	instance: { hostname: string; 'disk-size': number; memory: number; vcpus: number };
+	instance: { hostname: string; description?: string; 'disk-size': number; memory: number; vcpus: number };
+}
+
+export interface InstanceSummary {
+	id: string;
+	hostname: string;
+	description: string;
+	state: string;
+	remote_port: number;
+	service_port: number;
+}
+
+export async function listInstances(signal: AbortSignal): Promise<InstanceSummary[]> {
+	const response = await authenticatedFetch('/api/instance/summary', {
+		signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)])
+	});
+	if (!response.ok) throw new Error(await response.text() || 'Could not load instances.');
+	const entries: unknown = await response.json();
+	if (!Array.isArray(entries) || !entries.every((entry) => entry &&
+		['id', 'hostname', 'description', 'state'].every((key) => typeof entry[key] === 'string') &&
+		['remote_port', 'service_port'].every((key) => Number.isInteger(entry[key]) && entry[key] > 0 && entry[key] <= 65535))) {
+		throw new Error('The management server returned an unexpected instance list.');
+	}
+	return entries as InstanceSummary[];
 }
 
 export type InstanceAction = 'start' | 'shutdown' | 'force-shutdown' | 'delete';
@@ -26,7 +50,7 @@ export type InstanceAction = 'start' | 'shutdown' | 'force-shutdown' | 'delete';
 export function parseInstance(value: unknown): Instance {
 	if (typeof value !== 'object' || value === null) throw new Error('Unexpected instance response.');
 	const record = value as Record<string, unknown>;
-	const strings = ['id', 'owner_id', 'hostname', 'mac_address', 'ipv4_address'];
+	const strings = ['id', 'owner_id', 'hostname', 'description', 'mac_address', 'ipv4_address'];
 	const numbers = ['memory_mib', 'vcpus', 'remote_port', 'service_port'];
 	if (!strings.every((key) => typeof record[key] === 'string') ||
 		!numbers.every((key) => typeof record[key] === 'number' && Number.isFinite(record[key]))) {

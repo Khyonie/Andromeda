@@ -21,7 +21,7 @@
 		const config: VmConfig = {
 			user: { name: text('username'), key: text('key') },
 			networking: { ip: text('ip'), dhcp: values.has('dhcp'), mac: text('mac'), remote_port: number('remote_port'), service_port: number('service_port') },
-			instance: { hostname: text('hostname'), 'disk-size': number('disk'), memory: number('memory'), vcpus: number('vcpus') }
+			instance: { hostname: text('hostname'), description: text('description'), 'disk-size': number('disk'), memory: number('memory'), vcpus: number('vcpus') }
 		};
 		busy = true;
 		error = '';
@@ -56,6 +56,7 @@
 			<div class="panel-header"><div><h2>Machine</h2><p class="muted small">Disk and memory sizes are in MiB.</p></div></div>
 			<div class="form-grid">
 				<label class="field full-width">Hostname<input name="hostname" required maxlength="63" pattern="[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?" placeholder="my-instance" title="Letters, numbers, and hyphens; begin and end with a letter or number." /></label>
+				<label class="field full-width">Description (optional)<textarea name="description" rows="3" maxlength="2000" placeholder="What is this instance for?"></textarea></label>
 				<label class="field">Memory (MiB)<input name="memory" type="number" min="1" max="4294967295" step="1" value="2048" required /></label>
 				<label class="field">Virtual CPUs<input name="vcpus" type="number" min="1" max="4294967295" step="1" value="2" required /></label>
 				<label class="field">Disk size (MiB)<input name="disk" type="number" min="1" max="9007199254740991" step="1" value="8192" required /></label>

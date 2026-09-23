@@ -67,17 +67,7 @@ impl Metrics {
         };
         let info = domain.get_info()?;
         let active = domain.is_active()?;
-        let state = match info.state {
-            1 => "running",
-            2 => "blocked",
-            3 => "paused",
-            4 => "shutting-down",
-            5 => "shut-off",
-            6 => "crashed",
-            7 => "suspended",
-            _ => "unknown",
-        }
-        .to_string();
+        let state = super::state_label(info.state).to_string();
         let cpu_percent = if active {
             let now = Instant::now();
             let previous = self.samples.lock().unwrap().insert(

@@ -25,6 +25,7 @@ dependencies = [
  "axum",
  "chrono",
  "curl",
+ "dotenvy",
  "futures-util",
  "getrandom",
  "quick-xml",

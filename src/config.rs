@@ -22,6 +22,18 @@ pub struct Config {
 
 impl Config {
     pub fn from_args() -> Result<Self> {
+        // Use the project file, not a .env found by searching the launch directory.
+        // Existing environment variables take precedence. This runs before Tokio starts.
+        let env_file = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".env");
+        match dotenvy::from_path(&env_file) {
+            Ok(()) => {}
+            Err(dotenvy::Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
+            // dotenvy parse errors can contain the original line, including a secret.
+            Err(_) => bail!(
+                "Could not load {}. Check its syntax and permissions.",
+                env_file.display()
+            ),
+        }
         let mut flags = Flags::default();
         for argument in std::env::args().skip(1) {
             match argument.as_str() {

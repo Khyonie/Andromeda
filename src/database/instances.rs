@@ -1,6 +1,6 @@
 use sqlx::SqlitePool;
 
-use crate::model::{Instance, VmConfig};
+use crate::model::{Instance, InstanceSummary, VmConfig};
 
 pub async fn insert_instance(
     database: &SqlitePool,
@@ -12,9 +12,9 @@ pub async fn insert_instance(
         r#"
         INSERT INTO instances (
             id, hostname, memory_mib, vcpus, mac_address,
-            ipv4_address, remote_port, service_port, owner_id
+            ipv4_address, remote_port, service_port, owner_id, description
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#,
     )
     .bind(id.to_string())
@@ -26,6 +26,7 @@ pub async fn insert_instance(
     .bind(config.networking.remote_port)
     .bind(config.networking.service_port)
     .bind(owner_id)
+    .bind(&config.instance.description)
     .execute(database)
     .await?;
     Ok(())
@@ -41,6 +42,7 @@ pub async fn get_instance_by_id(
             id,
             owner_id,
             hostname,
+            description,
             memory_mib,
             vcpus,
             mac_address,
@@ -72,6 +74,22 @@ pub async fn delete_instance_by_id(database: &SqlitePool, id: &str) -> Result<()
         .execute(database)
         .await?;
     Ok(())
+}
+
+pub async fn get_instance_summaries(
+    database: &SqlitePool,
+    user_id: &str,
+) -> Result<Vec<InstanceSummary>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT i.id, i.hostname, i.description, i.remote_port, i.service_port FROM instances i \
+         WHERE i.owner_id = ? OR EXISTS \
+         (SELECT 1 FROM instance_members m WHERE m.instance_id = i.id AND m.user_id = ?) \
+         ORDER BY i.hostname COLLATE NOCASE, i.id",
+    )
+    .bind(user_id)
+    .bind(user_id)
+    .fetch_all(database)
+    .await
 }
 
 #[cfg(test)]

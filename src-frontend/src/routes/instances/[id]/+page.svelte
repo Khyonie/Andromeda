@@ -3,6 +3,7 @@
 	import { goto, invalidateAll } from '$app/navigation';
 	import InstanceMetrics from '$lib/components/InstanceMetrics.svelte';
 	import StatusBadge from '$lib/components/StatusBadge.svelte';
+	import { powerStateLabel, powerStateTone } from '$lib/instance-state';
 	import { performInstanceAction, type InstanceAction, type InstanceStatus } from '$lib/api/instances';
 	import type { PageData } from './$types';
 
@@ -14,10 +15,6 @@
 	let status = $state<InstanceStatus | null>(null);
 	let statusRefresh = $state(0);
 	let statusLoading = $state(true);
-	const stateLabels: Record<string, string> = {
-		running: 'Running', blocked: 'Running (waiting)', paused: 'Paused', 'shutting-down': 'Shutting down',
-		'shut-off': 'Stopped', crashed: 'Crashed', suspended: 'Suspended', missing: 'Domain missing', unknown: 'Unknown'
-	};
 	const labels: Record<InstanceAction, string> = {
 		start: 'Start', shutdown: 'Shutdown', 'force-shutdown': 'Force-shutdown', delete: 'Delete instance'
 	};
@@ -89,9 +86,10 @@
 				<div class="panel-header"><h2 id="configuration-heading">Instance information</h2></div>
 				<dl class="details-grid">
 					<div><dt>Your role</dt><dd>{data.instance.role}</dd></div>
-				<div><dt>Power state</dt><dd><StatusBadge label={status ? stateLabels[status.state] ?? status.state : statusLoading ? 'Loading' : 'Unavailable'} tone={status?.state === 'running' ? 'success' : status?.state === 'crashed' || status?.state === 'missing' ? 'warning' : 'neutral'} /></dd></div>
+				<div><dt>Power state</dt><dd><StatusBadge label={status ? powerStateLabel(status.state) : statusLoading ? 'Loading' : 'Unavailable'} tone={status ? powerStateTone(status.state) : 'neutral'} /></dd></div>
 					<div class="full-width"><dt>Instance ID</dt><dd><code>{data.instance.id}</code></dd></div>
 					<div><dt>Hostname</dt><dd>{data.instance.hostname}</dd></div>
+					<div><dt>Description</dt><dd class="instance-description">{data.instance.description || '—'}</dd></div>
 					<div><dt>Memory</dt><dd>{data.instance.memory_mib.toLocaleString()} MiB</dd></div>
 					<div><dt>Virtual CPUs</dt><dd>{data.instance.vcpus}</dd></div>
 					<div><dt>MAC address</dt><dd><code>{data.instance.mac_address}</code></dd></div>

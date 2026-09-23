@@ -20,7 +20,7 @@ use crate::{
     database::instances as database,
     libvirt,
     logging::{OperationLog, Severity, SharedLogger},
-    model::{Instance, InstanceView, VmConfig},
+    model::{Instance, InstanceListEntry, InstanceView, VmConfig},
     paths::StoragePaths,
     settings::SettingsService,
     storage,
@@ -130,6 +130,43 @@ pub async fn get_instance_ids(
 }
 
 impl InstanceService {
+    pub async fn list(&self, account: &Account) -> Result<Vec<InstanceListEntry>, InstanceError> {
+        let mut operation = OperationLog::new(self.logger.clone(), "list", None);
+        operation.step("Reading instance summaries from database");
+        let instances = database::get_instance_summaries(&self.database, &account.id)
+            .await
+            .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?;
+        operation.step("Reading instance power states");
+        let qemu = self.qemu.clone();
+        let task_operation = operation.clone();
+        let entries = tokio::task::spawn_blocking(move || {
+            instances
+                .into_iter()
+                .map(|instance| {
+                    let state = match libvirt::power_state(&qemu, &instance.id) {
+                        Ok(state) => state,
+                        Err(error) => {
+                            task_operation.message(
+                                Severity::Warning,
+                                format!("Could not read power state for {}: {error}", instance.id),
+                            );
+                            "unavailable"
+                        }
+                    }
+                    .into();
+                    InstanceListEntry { instance, state }
+                })
+                .collect::<Vec<_>>()
+        })
+        .await
+        .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?;
+        operation.info(format!(
+            "Completed: returning {} instance summaries",
+            entries.len()
+        ));
+        Ok(entries)
+    }
+
     pub fn new(
         database: SqlitePool,
         qemu: Connect,
@@ -247,7 +284,7 @@ impl InstanceService {
     pub async fn create(
         &self,
         account: &Account,
-        config: VmConfig,
+        mut config: VmConfig,
     ) -> Result<CreateOutcome, InstanceError> {
         let mut operation = OperationLog::new(
             self.logger.clone(),
@@ -258,6 +295,17 @@ impl InstanceService {
             operation.info(
                 "Dry run: disk commands, domain definition, and database insertion will be skipped",
             );
+        }
+        operation.step("Validating instance description");
+        config.instance.description = config.instance.description.trim().to_owned();
+        if config.instance.description.chars().count() > 2000
+            || config.instance.description.contains('\0')
+        {
+            return Err(operation_error(
+                &operation,
+                ErrorKind::InvalidInput,
+                "Description must be at most 2000 characters and cannot contain NUL characters.",
+            ));
         }
         operation.step("Validating instance paths");
         let paths = self

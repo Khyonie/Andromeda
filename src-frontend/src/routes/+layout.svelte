@@ -49,13 +49,21 @@
 			{/if}
 		</nav>
 
-		<div class="sidebar-footer"><span class="workspace-mark">A</span><div>{data.session.user.display_name}<small>@{data.session.user.username}</small></div></div>
 	</aside>
 
 	<div class="workspace">
-		<header class="topbar"><span>Workspace <span class="breadcrumb-separator">/</span> <strong>{page.url.pathname === '/admin' ? 'Administration' : page.url.pathname === "/instances/new" ? "Create instance" : page.url.pathname.startsWith("/instances/") ? "Instance details" : "Overview"}</strong></span><button class="button secondary" onclick={signOut} disabled={signingOut}>{signingOut ? 'Signing out…' : 'Sign out'}</button></header>
+		<header class="topbar">
+			<span class="workspace-breadcrumb">Workspace <span class="breadcrumb-separator">/</span> <strong>{page.url.pathname === '/admin' ? 'Administration' : page.url.pathname === "/instances/new" ? "Create instance" : page.url.pathname.startsWith("/instances/") ? "Instance details" : "Overview"}</strong></span>
+			<div class="account-actions">
+				<div class="account-identity" aria-label="Signed-in account">
+					<span class="account-name">{data.session.user.display_name}</span>
+					<span class="account-username">@{data.session.user.username}</span>
+				</div>
+				<button class="button secondary" onclick={signOut} disabled={signingOut}>{signingOut ? 'Signing out…' : 'Sign out'}</button>
+			</div>
+		</header>
 		<main id="main" tabindex="-1">{#if logoutError}<p class="error-notice standalone" role="alert">{logoutError}</p>{/if}{@render children()}</main>
-		<footer class="page-footer"><span>Andromeda</span><span>A home for your virtual machines.</span></footer>
+		<footer class="page-footer"><span>Andromeda v0.1.0</span><span>A home for your virtual machines.</span></footer>
 	</div>
 </div>
 
