@@ -112,7 +112,7 @@ impl SettingsService {
     }
 }
 
-async fn validate_public_key(key: &str) -> Result<(), InstanceError> {
+pub(crate) async fn validate_public_key(key: &str) -> Result<(), InstanceError> {
     // An empty key disables the guest sysadmin account. Reject private keys,
     // multiple keys, and authorized_keys options before invoking OpenSSH.
     if key.is_empty() {

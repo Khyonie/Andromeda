@@ -5,6 +5,8 @@ use std::{
     sync::{Arc, Mutex, Weak},
 };
 
+mod provisioning;
+
 use crate::auth::{
     Account,
     permissions::{self, Permission},
@@ -63,7 +65,9 @@ pub struct InstanceService {
     paths: StoragePaths,
     settings: SettingsService,
     locks: Arc<Mutex<HashMap<String, Weak<AsyncMutex<()>>>>>,
+    creation_lock: Arc<AsyncMutex<()>>,
     metrics: Arc<libvirt::metrics::Metrics>,
+    host_metrics: Arc<crate::host::HostMetrics>,
 }
 
 fn operation_error(
@@ -130,6 +134,37 @@ pub async fn get_instance_ids(
 }
 
 impl InstanceService {
+    pub async fn host_status(&self) -> Result<crate::host::HostStatus, InstanceError> {
+        let mut operation = OperationLog::new(self.logger.clone(), "host status", None);
+        operation.step("Reading configured VM allocations");
+        let (instances, vcpus, memory_mib): (u64, u64, u64) = sqlx::query_as(
+            "SELECT COUNT(*), COALESCE(SUM(vcpus), 0), COALESCE(SUM(memory_mib), 0) FROM instances",
+        )
+        .fetch_one(&self.database)
+        .await
+        .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?;
+        let memory_bytes = memory_mib.checked_mul(1024 * 1024).ok_or_else(|| {
+            operation_error(
+                &operation,
+                ErrorKind::Internal,
+                "Configured memory exceeds supported size",
+            )
+        })?;
+        let configured = crate::host::ConfiguredResources {
+            instances,
+            vcpus,
+            memory_bytes,
+        };
+        let metrics = self.host_metrics.clone();
+        let paths = self.paths.clone();
+        operation.step("Reading host CPU, RAM, and filesystem usage");
+        let status = tokio::task::spawn_blocking(move || metrics.read(&paths, configured))
+            .await
+            .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?;
+        operation.info("Completed: returning host status");
+        Ok(status)
+    }
+
     pub async fn list(&self, account: &Account) -> Result<Vec<InstanceListEntry>, InstanceError> {
         let mut operation = OperationLog::new(self.logger.clone(), "list", None);
         operation.step("Reading instance summaries from database");
@@ -183,7 +218,9 @@ impl InstanceService {
             settings,
             logger,
             locks: Arc::default(),
+            creation_lock: Arc::default(),
             metrics: Arc::default(),
+            host_metrics: Arc::default(),
         }
     }
 
@@ -284,8 +321,27 @@ impl InstanceService {
     pub async fn create(
         &self,
         account: &Account,
+        config: VmConfig,
+    ) -> Result<CreateOutcome, InstanceError> {
+        // A browser timeout/disconnect must not cancel cleanup or SQL commit halfway through.
+        let service = self.clone();
+        let account = account.clone();
+        tokio::spawn(async move { service.create_inner(&account, config).await })
+            .await
+            .map_err(|error| InstanceError {
+                kind: ErrorKind::Internal,
+                message: format!("Instance creation task failed: {error}"),
+            })?
+    }
+
+    async fn create_inner(
+        &self,
+        account: &Account,
         mut config: VmConfig,
     ) -> Result<CreateOutcome, InstanceError> {
+        // Keep conflict checks and provisioning together, including IP addresses
+        // whose different CIDR prefixes would evade SQLite's text uniqueness.
+        let _creation_guard = self.creation_lock.lock().await;
         let mut operation = OperationLog::new(
             self.logger.clone(),
             "create",
@@ -296,6 +352,13 @@ impl InstanceService {
                 "Dry run: disk commands, domain definition, and database insertion will be skipped",
             );
         }
+        operation.step("Validating instance configuration");
+        provisioning::validate_request(&mut config)
+            .map_err(|e| operation_error(&operation, ErrorKind::InvalidInput, e))?;
+        operation.step("Validating guest SSH public key");
+        crate::settings::validate_public_key(&config.user.key)
+            .await
+            .map_err(|e| operation_error(&operation, e.kind, e.message))?;
         operation.step("Validating instance description");
         config.instance.description = config.instance.description.trim().to_owned();
         if config.instance.description.chars().count() > 2000
@@ -307,26 +370,82 @@ impl InstanceService {
                 "Description must be at most 2000 characters and cannot contain NUL characters.",
             ));
         }
+        operation.step("Validating extra packages");
+        let mut packages = Vec::new();
+        for package in &config.instance.extra_packages {
+            let package = package.trim();
+            if package.is_empty()
+                || package.starts_with(['-', '.'])
+                || !package
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"@._+-".contains(&byte))
+            {
+                return Err(operation_error(
+                    &operation,
+                    ErrorKind::InvalidInput,
+                    "Extra packages must be package names using letters, numbers, @, dots, underscores, +, or hyphens, and cannot start with a dot or hyphen.",
+                ));
+            }
+            if !packages.iter().any(|existing| existing == package) {
+                packages.push(package.to_owned());
+            }
+        }
+        config.instance.extra_packages = packages;
         operation.step("Validating instance paths");
         let paths = self
             .paths
             .instance(&config.instance.hostname)
             .map_err(|e| operation_error(&operation, ErrorKind::InvalidInput, e))?;
         let _guard = self.lock(&config.instance.hostname, &operation)?;
-        let exists: bool =
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM instances WHERE hostname = ?)")
-                .bind(&config.instance.hostname)
-                .fetch_one(&self.database)
-                .await
-                .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?;
-        if exists
-            || paths.disk.symlink_metadata().is_ok()
-            || paths.seed_iso.symlink_metadata().is_ok()
+        operation.step("Checking database conflicts");
+        let conflicts: Vec<(String, String, String, u16, u16)> = sqlx::query_as(
+            "SELECT hostname, mac_address, coalesce(ipv4_address, ''), remote_port, service_port FROM instances \
+             WHERE hostname = ? OR lower(mac_address) = ? \
+             OR CASE WHEN instr(ipv4_address, '/') > 0 THEN substr(ipv4_address, 1, instr(ipv4_address, '/') - 1) ELSE ipv4_address END = ? \
+             OR remote_port = ? OR service_port = ?"
+        ).bind(&config.instance.hostname).bind(&config.networking.mac)
+            .bind(config.networking.ip.split('/').next().unwrap())
+            .bind(config.networking.remote_port).bind(config.networking.service_port)
+            .fetch_all(&self.database).await
+            .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?;
+        if !conflicts.is_empty() {
+            let mut fields = Vec::new();
+            for (hostname, mac, ip, remote, service) in conflicts {
+                if hostname == config.instance.hostname {
+                    fields.push("hostname");
+                }
+                if mac.eq_ignore_ascii_case(&config.networking.mac) {
+                    fields.push("MAC address");
+                }
+                if ip.split('/').next() == config.networking.ip.split('/').next() {
+                    fields.push("IP address");
+                }
+                if remote == config.networking.remote_port {
+                    fields.push("remote port");
+                }
+                if service == config.networking.service_port {
+                    fields.push("service port");
+                }
+            }
+            fields.sort_unstable();
+            fields.dedup();
+            return Err(operation_error(
+                &operation,
+                ErrorKind::Conflict,
+                format!(
+                    "Already in use: {}. Choose unused values.",
+                    fields.join(", ")
+                ),
+            ));
+        }
+        operation.step("Checking for an existing libvirt domain");
+        if provisioning::check_domain_name(&self.qemu, &config.instance.hostname)
+            .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?
         {
             return Err(operation_error(
                 &operation,
                 ErrorKind::Conflict,
-                "This hostname or its storage already exists. Choose another hostname.",
+                "A libvirt domain with this hostname already exists.",
             ));
         }
         operation.step("Reading guest defaults");
@@ -335,52 +454,88 @@ impl InstanceService {
             .snapshot()
             .await
             .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?;
-        if config.user.name == "sysadmin" {
-            return Err(operation_error(
-                &operation,
-                ErrorKind::InvalidInput,
-                "The username sysadmin is reserved for the configured system administrator.",
-            ));
-        }
+        operation.step("Checking storage and provisioning tools");
+        storage::preflight(&paths, config.instance.disk_size)
+            .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?;
+        operation.step("Checking hypervisor and network capabilities");
+        provisioning::check_hypervisor(&self.qemu, &config)
+            .map_err(|e| operation_error(&operation, ErrorKind::InvalidInput, e))?;
+        operation.step("Generating domain XML");
+        let (xml, id) = libvirt::generate_domain(&config, &paths)
+            .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?;
         operation.step("Generating cloud-init data");
         let user_data = cloud_init::user_seed(&config, &defaults.sysadmin_ssh_key);
         let network_config = cloud_init::network_config_seed(&config, defaults.gateway_ip);
         let meta_data = cloud_init::metadata_seed(&config);
 
-        operation.step("Writing temporary seed files");
-        let seeds =
-            cloud_init::SeedFiles::write(&user_data, &network_config, &meta_data, &operation)
-                .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?;
-
-        operation.step("Preparing instance disk");
-        storage::create_image(&paths, config.instance.disk_size, &self.flags, &operation)
-            .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?;
-
-        operation.step("Preparing cloud-init ISO");
-        storage::create_iso(&paths, &seeds, &self.flags, &operation)
-            .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?;
-        drop(seeds);
-
-        operation.step("Generating domain XML");
-        let (xml, id) = libvirt::generate_domain(&config, &paths)
-            .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?;
-
         if self.flags.dry_run {
-            operation.info(format!(
-                "Completed dry run: would define and register domain with UUID {id}"
-            ));
+            operation.info(format!("Preflight passed: would create disk, seed ISO, and domain {id}. No resources were created."));
             return Ok(CreateOutcome::DryRun);
         }
 
-        operation.step("Defining libvirt domain");
-        libvirt::define_domain(&self.qemu, &xml)
-            .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?;
-        operation.info(format!("Defined domain with UUID {id}"));
-
-        operation.step("Inserting instance into database");
-        database::insert_instance(&self.database, &id, &config, &account.id)
+        // Exercise the actual insert, then roll it back before touching storage.
+        // This catches constraints, missing owners, and read-only databases early
+        // without holding SQLite's writer lock during slow disk commands.
+        // The creation lock prevents other requests from passing the same checks.
+        operation.step("Verifying database registration");
+        let mut transaction = self
+            .database
+            .begin()
             .await
             .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?;
+        database::insert_instance(&mut *transaction, &id, &config, &account.id)
+            .await
+            .map_err(|e| {
+                let kind = if e
+                    .as_database_error()
+                    .is_some_and(|e| e.is_unique_violation())
+                {
+                    ErrorKind::Conflict
+                } else {
+                    ErrorKind::Internal
+                };
+                operation_error(&operation, kind, e)
+            })?;
+        transaction
+            .rollback()
+            .await
+            .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?;
+        operation.step("Reserving instance files");
+        let mut resources = provisioning::Resources::reserve(&paths, &operation)
+            .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?;
+        let result: Result<(), InstanceError> = async {
+            // Defining first also catches libvirt XML rejection before expensive disk work.
+            operation.step("Defining libvirt domain");
+            resources.domain = Some(
+                libvirt::define_domain(&self.qemu, &xml)
+                    .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?,
+            );
+            operation.step("Writing temporary seed files");
+            let seeds =
+                cloud_init::SeedFiles::write(&user_data, &network_config, &meta_data, &operation)
+                    .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?;
+            operation.step("Preparing instance disk");
+            storage::create_image(&paths, config.instance.disk_size, &self.flags, &operation)
+                .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?;
+            operation.step("Preparing cloud-init ISO");
+            storage::create_iso(&paths, &seeds, &self.flags, &operation)
+                .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?;
+            operation.step("Inserting instance into database");
+            database::insert_instance(&self.database, &id, &config, &account.id)
+                .await
+                .map_err(|e| operation_error(&operation, ErrorKind::Internal, e))?;
+            Ok(())
+        }
+        .await;
+        if let Err(mut error) = result {
+            if let Err(cleanup) = resources.rollback() {
+                error
+                    .message
+                    .push_str(&format!(" Cleanup needs manual recovery: {cleanup:#}"));
+            }
+            return Err(error);
+        }
+        resources.commit();
 
         operation.info(format!("Completed: registered new domain with UUID {id}"));
         Ok(CreateOutcome::Created { id: id.to_string() })

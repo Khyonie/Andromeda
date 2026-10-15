@@ -12,6 +12,7 @@ mod auth;
 mod cloud_init;
 mod config;
 mod database;
+mod host;
 mod instances;
 mod libvirt;
 mod logging;

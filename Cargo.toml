@@ -29,3 +29,4 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 getrandom = "0.4"
 sha2 = "0.10"
 url = "2"
+rustix = { version = "1.1.4", features = ["fs"] }

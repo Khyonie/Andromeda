@@ -2,8 +2,8 @@ use sqlx::SqlitePool;
 
 use crate::model::{Instance, InstanceSummary, VmConfig};
 
-pub async fn insert_instance(
-    database: &SqlitePool,
+pub async fn insert_instance<'e>(
+    database: impl sqlx::Executor<'e, Database = sqlx::Sqlite>,
     id: &uuid::Uuid,
     config: &VmConfig,
     owner_id: &str,

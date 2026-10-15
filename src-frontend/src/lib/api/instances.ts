@@ -19,7 +19,7 @@ export interface Instance {
 export interface VmConfig {
 	user: { name: string; key: string };
 	networking: { ip: string; dhcp: boolean; mac: string; remote_port: number; service_port: number };
-	instance: { hostname: string; description?: string; 'disk-size': number; memory: number; vcpus: number };
+	instance: { hostname: string; description?: string; extra_packages?: string[]; 'disk-size': number; memory: number; vcpus: number };
 }
 
 export interface InstanceSummary {

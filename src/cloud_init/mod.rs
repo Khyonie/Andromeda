@@ -14,6 +14,19 @@ const NETWORK_CONFIG_SEED: &str = include_str!("../../assets/cloud-init/network-
 const META_DATA_SEED: &str = include_str!("../../assets/cloud-init/meta-data");
 
 pub fn user_seed(config: &VmConfig, sysadmin_ssh_key: &str) -> String {
+    let extra_packages = config
+        .instance
+        .extra_packages
+        .iter()
+        .map(|package| {
+            // Quote names so YAML literals such as "yes" remain strings.
+            format!(
+                "  - {}",
+                serde_json::to_string(package).expect("string serialization")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     let sysadmin_user = if sysadmin_ssh_key.is_empty() {
         String::new()
     } else {
@@ -25,10 +38,11 @@ pub fn user_seed(config: &VmConfig, sysadmin_ssh_key: &str) -> String {
     };
     interpolate_str!(
         USER_DATA_SEED,
-        vm = config.instance.hostname,
-        user_name = config.user.name,
-        user_key = config.user.key,
-        sysadmin_user = sysadmin_user
+        vm = serde_json::to_string(&config.instance.hostname).expect("string serialization"),
+        user_name = serde_json::to_string(&config.user.name).expect("string serialization"),
+        user_key = serde_json::to_string(&config.user.key).expect("string serialization"),
+        sysadmin_user = sysadmin_user,
+        extra_packages = extra_packages
     )
 }
 

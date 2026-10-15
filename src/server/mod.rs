@@ -29,6 +29,7 @@ fn router(
         .route("/api/auth/discord", get(auth::login))
         .route("/api/auth/discord/callback", get(auth::callback))
         .route("/api/auth/logout", post(auth::logout))
+        .route("/api/admin/host/status", get(admin::host_status))
         .route(
             "/api/admin/settings",
             get(admin::get_settings)

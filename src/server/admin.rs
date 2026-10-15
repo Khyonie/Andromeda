@@ -3,6 +3,13 @@ use axum::{Json, extract::State, http::StatusCode};
 use super::{auth::AdminSession, error::ApiError, state::AppState};
 use crate::settings::{GuestDefaults, UpdateDefaults};
 
+pub(super) async fn host_status(
+    State(state): State<AppState>,
+    AdminSession(_session): AdminSession,
+) -> Result<Json<crate::host::HostStatus>, ApiError> {
+    Ok(Json(state.instances.host_status().await?))
+}
+
 pub(super) async fn get_settings(
     State(state): State<AppState>,
     AdminSession(_session): AdminSession,

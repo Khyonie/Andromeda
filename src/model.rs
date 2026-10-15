@@ -28,6 +28,8 @@ pub struct InstanceConfig {
     pub hostname: String,
     #[serde(default)]
     pub description: String,
+    #[serde(default)]
+    pub extra_packages: Vec<String>,
     #[serde(rename = "disk-size")]
     pub disk_size: usize,
     pub memory: u64,

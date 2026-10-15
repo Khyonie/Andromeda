@@ -21,7 +21,7 @@
 		const config: VmConfig = {
 			user: { name: text('username'), key: text('key') },
 			networking: { ip: text('ip'), dhcp: values.has('dhcp'), mac: text('mac'), remote_port: number('remote_port'), service_port: number('service_port') },
-			instance: { hostname: text('hostname'), description: text('description'), 'disk-size': number('disk'), memory: number('memory'), vcpus: number('vcpus') }
+			instance: { hostname: text('hostname'), description: text('description'), extra_packages: [...new Set(text('extra_packages').split(/[\s,]+/).filter(Boolean))], 'disk-size': number('disk'), memory: number('memory'), vcpus: number('vcpus') }
 		};
 		busy = true;
 		error = '';
@@ -45,7 +45,7 @@
 <svelte:head><title>Create instance · Andromeda</title></svelte:head>
 <a class="back-link" href="/#instances">← All instances</a>
 <section class="page-heading">
-	<div><p class="eyebrow">NEW INSTANCE</p><h1>Create instance</h1><p class="muted">Configure your machine, networking, and SSH access.</p></div>
+	<div><p class="eyebrow">NEW INSTANCE</p><h1>Create instance</h1><p class="muted">Configure your machine, networking, SSH access, and extra packages.</p></div>
 </section>
 {#if error}<div class="error-notice standalone" role="alert">{error}</div>{/if}
 {#if notice}<p class="success-notice" role="status">{notice}</p>{/if}
@@ -77,6 +77,13 @@
 			<div class="form-grid">
 				<label class="field full-width">Username<input name="username" required maxlength="32" pattern="[a-z_][a-z0-9_\-]*" placeholder="andromeda" title="Lowercase letters, numbers, underscores, and hyphens; begin with a letter or underscore." /></label>
 				<label class="field full-width">SSH public key<textarea name="key" rows="4" required placeholder="ssh-ed25519 AAAA…" spellcheck="false"></textarea></label>
+			</div>
+		</section>
+		<section class="panel form-panel">
+			<div class="panel-header"><div><h2>Extra packages</h2><p class="muted small">Install additional packages on first boot alongside the instance defaults.</p></div></div>
+			<div class="form-grid">
+				<label class="field full-width">Package names (optional)<textarea name="extra_packages" rows="4" placeholder="git&#10;htop&#10;tmux" spellcheck="false" autocapitalize="none" aria-describedby="extra-packages-help"></textarea></label>
+				<p id="extra-packages-help" class="muted small full-width">Separate names with spaces, commas, or new lines. Use packages available in the guest's configured repositories.</p>
 			</div>
 		</section>
 		<div class="button-row"><button type="submit" class="button primary">{busy ? 'Creating instance…' : 'Create instance'}</button><a class="button secondary" href="/#instances">Cancel</a></div>

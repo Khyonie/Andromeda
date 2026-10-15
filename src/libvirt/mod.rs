@@ -60,8 +60,8 @@ pub fn connect(uri: &str) -> Result<Connect, Error> {
     Connect::open(Some(uri))
 }
 
-pub fn define_domain(qemu: &Connect, xml: &str) -> Result<(), Error> {
-    LiveDomain::define_xml(qemu, xml).map(|_| ())
+pub fn define_domain(qemu: &Connect, xml: &str) -> Result<LiveDomain, Error> {
+    LiveDomain::define_xml_flags(qemu, xml, virt::sys::VIR_DOMAIN_DEFINE_VALIDATE)
 }
 
 pub fn is_active(domain: &LiveDomain) -> Result<bool, Error> {

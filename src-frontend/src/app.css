@@ -195,3 +195,25 @@ textarea { font: inherit; color: inherit; background: var(--background); border:
 .login-shell { min-height: 100vh; display: grid; place-items: center; }
 .login-panel { width: min(100%, 480px); }
 .login-panel .controls-body { gap: 24px; padding: 36px; }
+
+/* Host capacity and provisioning defaults. */
+.host-status { margin-bottom: 32px; }
+.host-metrics-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.host-metric { padding: 24px 26px; min-width: 0; display: flex; flex-direction: column; gap: 14px; }
+.host-metric + .host-metric { border-left: 1px solid var(--line); }
+.host-metric h3 { font-size: 14px; margin-bottom: 0; }
+.host-metric .usage-value { font-size: 24px; }
+.host-allocation { font-size: 12px; color: var(--muted); line-height: 1.6; margin-top: auto; padding-top: 8px; }
+.host-allocation strong { font-weight: 500; color: var(--text); }
+.host-disk { display: grid; gap: 14px; }
+.host-disk + .host-disk { border-top: 1px solid var(--line); padding-top: 18px; }
+.host-disk-paths { font-size: 12px; color: var(--muted); }
+.host-disk-paths summary { cursor: pointer; color: var(--accent); }
+.host-disk-paths ul { padding-left: 18px; margin-bottom: 0; }
+.host-status-note { padding: 18px 26px; border-top: 1px solid var(--line); }
+.guest-defaults-heading { margin-bottom: 24px; }
+.sysadmin-login { display: grid; gap: 8px; font-size: 13px; }
+@media (max-width: 1100px) {
+	.host-metrics-grid { grid-template-columns: minmax(0, 1fr); }
+	.host-metric + .host-metric { border-left: 0; border-top: 1px solid var(--line); }
+}

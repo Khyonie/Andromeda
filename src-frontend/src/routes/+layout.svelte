@@ -35,10 +35,6 @@
 			<p class="nav-heading">WORKSPACE</p>
 			<a class="nav-link" class:active={page.url.pathname === "/"} href="/" aria-current={page.url.pathname === "/" ? "page" : undefined}>
 				<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /></svg>
-				Overview
-			</a>
-			<a class="nav-link" class:active={page.url.pathname.startsWith("/instances")} href="/#instances">
-				<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="3" width="18" height="7" rx="2" /><rect x="3" y="14" width="18" height="7" rx="2" /><path d="M7 6.5h.01M7 17.5h.01M15 6.5h3M15 17.5h3" /></svg>
 				Instances
 			</a>
 			{#if data.session.is_admin}

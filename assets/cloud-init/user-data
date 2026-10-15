@@ -8,6 +8,8 @@ packages:
   - qemu-guest-agent
   - fish
   - micro
+  - eza
+{extra_packages}
 users:
   - name: {user_name}
     shell: /usr/bin/fish

@@ -51,7 +51,7 @@
 </svelte:head>
 
 <section class="page-heading">
-	<div><p class="eyebrow">YOUR WORKSPACE</p><h1>Overview</h1><p class="muted">A little perspective on your infrastructure.</p></div>
+	<div><p class="eyebrow">YOUR WORKSPACE</p><h1>Overview</h1><p class="muted">All instances you have access to.</p></div>
 	<div class="button-row"><a class="button primary" href="/instances/new">Create instance</a>
 	<button class="button secondary" onclick={refresh} disabled={loading}>
 		<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6.1 7a7 7 0 0 1 11.6-1L20 9M4 15l2.3 3A7 7 0 0 0 17.9 17" /></svg>
@@ -70,8 +70,14 @@
 	{#if instances === null || instances.length === 0}
 		<div class="empty-state" aria-live="polite">
 			<div class="empty-icon" aria-hidden="true"><svg viewBox="0 0 48 48" fill="none"><rect x="10" y="9" width="28" height="12" rx="3" /><rect x="10" y="27" width="28" height="12" rx="3" /><path d="M16 15h.01M16 33h.01M28 15h4M28 33h4" /></svg></div>
-			<h3>{loading ? 'Loading your workspace…' : instances === null ? 'Ready when you are.' : 'A fresh start.'}</h3>
-			<p>{instances === null ? 'Load your instances to see what’s in your workspace.' : 'There are no registered instances in this workspace yet.'}</p>
+			<h3>{loading ? 'Loading your workspace…' : instances === null ? 'Ready when you are.' : 'You have no instances.'}</h3>
+			<p>
+				{#if instances === null}
+					Load your instances to see what’s in your workspace.
+				{:else}
+					There are no registered instances in your workspace yet. <a class="create-instance-link" href="/instances/new">Create one?</a>
+				{/if}
+			</p>
 		</div>
 	{:else}
 		<div class="list-toolbar"><label for="instance-search">Filter instances</label><input id="instance-search" type="search" bind:value={filter} placeholder="Search names, descriptions, or ports…" /></div>
@@ -82,3 +88,11 @@
 		{/if}
 	{/if}
 </section>
+
+<style>
+	.create-instance-link {
+		color: var(--accent);
+		text-decoration: underline;
+		text-underline-offset: 3px;
+	}
+</style>

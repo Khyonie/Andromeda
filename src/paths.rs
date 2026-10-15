@@ -127,6 +127,7 @@ mod tests {
             instance: crate::model::InstanceConfig {
                 hostname: "vm-alice".into(),
                 description: String::new(),
+                extra_packages: Vec::new(),
                 disk_size: 1024,
                 memory: 512,
                 vcpus: 1,

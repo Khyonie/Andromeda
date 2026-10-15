@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { invalidateAll } from '$app/navigation';
 	import { saveGuestDefaults } from '$lib/api/admin';
+	import HostMetrics from '$lib/components/HostMetrics.svelte';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
@@ -45,10 +46,14 @@
 <div class="page-heading">
 	<div>
 		<p class="eyebrow">ADMINISTRATION</p>
-		<h1>Guest defaults</h1>
-		<p class="muted">Changes apply to new instances immediately. Existing instances keep their current configuration.</p>
+		<h1>Administration</h1>
+		<p class="muted">Host resources and defaults for new instances.</p>
 	</div>
 </div>
+
+<HostMetrics />
+
+<div class="guest-defaults-heading"><h2>Guest defaults</h2><p class="muted">Changes apply to new instances immediately. Existing instances keep their current configuration.</p></div>
 
 {#if error}<p class="error-notice standalone" role="alert">{error}</p>{/if}
 {#if notice}<p class="success-notice" role="status">{notice}</p>{/if}
@@ -70,8 +75,9 @@
 			<div class="form-grid">
 				<label class="field full-width">SSH public key
 					<textarea name="sysadmin_ssh_key" value={settings.sysadmin_ssh_key} rows="4" maxlength="16384" spellcheck="false" placeholder="ssh-ed25519 AAAA…" aria-describedby="key-help"></textarea>
-					<span id="key-help" class="muted small">Grants SSH access as <code>sysadmin</code> with passwordless sudo on new instances. Paste one public key, or leave empty to disable this account.</span>
+					<span id="key-help" class="muted small">Paste one public key, or leave empty to disable the sysadmin account on new instances.</span>
 				</label>
+				<div class="sysadmin-login full-width"><p>Login command: <code>ssh sysadmin@&lt;VM IP&gt;</code></p><p class="muted small">Use the matching private key. The guest username is always <code>sysadmin</code>, regardless of the comment in the public key. This account has passwordless sudo.</p></div>
 			</div>
 		</section>
 		<div class="button-row">

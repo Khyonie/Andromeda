@@ -9,6 +9,114 @@ use crate::{
     paths::{InstancePaths, skeleton_directory},
 };
 
+/// Inspect prerequisites without creating files or modifying the backing image.
+pub(crate) fn preflight(paths: &InstancePaths, size_mib: usize) -> Result<()> {
+    use rustix::fs::{Access, AtFlags, CWD, accessat};
+    for program in ["qemu-img", "virt-customize", "cloud-localds", "genisoimage"] {
+        let available = std::env::var_os("PATH").is_some_and(|search| {
+            std::env::split_paths(&search).any(|directory| {
+                let path = directory.join(program);
+                path.is_file() && accessat(CWD, &path, Access::EXEC_OK, AtFlags::EACCESS).is_ok()
+            })
+        });
+        anyhow::ensure!(
+            available,
+            "Required executable is missing or not executable: {program}"
+        );
+    }
+    for path in [&paths.disk, &paths.seed_iso] {
+        match std::fs::symlink_metadata(path) {
+            Ok(_) => bail!("Instance storage already exists: {}", path.display()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| format!("Inspecting {}", path.display()));
+            }
+        }
+        let parent = path
+            .parent()
+            .context("Instance path has no parent directory")?;
+        anyhow::ensure!(
+            parent.is_dir(),
+            "Storage directory is missing: {}",
+            parent.display()
+        );
+        accessat(
+            CWD,
+            parent,
+            Access::WRITE_OK | Access::EXEC_OK,
+            AtFlags::EACCESS,
+        )
+        .with_context(|| format!("Storage directory is not writable: {}", parent.display()))?;
+        anyhow::ensure!(
+            rustix::fs::statvfs(parent)?.f_bavail > 0,
+            "Storage filesystem has no available space: {}",
+            parent.display()
+        );
+    }
+    let temporary = std::env::temp_dir();
+    anyhow::ensure!(
+        temporary.is_dir(),
+        "Temporary directory is missing: {}",
+        temporary.display()
+    );
+    accessat(
+        CWD,
+        &temporary,
+        Access::WRITE_OK | Access::EXEC_OK,
+        AtFlags::EACCESS,
+    )
+    .context("Temporary directory is not writable")?;
+    check_skeleton(&skeleton_directory())?;
+    anyhow::ensure!(
+        paths.cloud_image.is_file(),
+        "Cloud image is missing: {}",
+        paths.cloud_image.display()
+    );
+    let output = Command::new("qemu-img")
+        .args(["info", "--output=json"])
+        .arg(&paths.cloud_image)
+        .output()
+        .context("Inspecting the cloud image")?;
+    anyhow::ensure!(
+        output.status.success(),
+        "Cannot read the cloud image: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    let info: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    anyhow::ensure!(
+        info["format"] == "qcow2",
+        "The cloud image must use qcow2 format."
+    );
+    let minimum = info["virtual-size"]
+        .as_u64()
+        .context("Cloud image has no virtual size")?;
+    let requested = (size_mib as u64)
+        .checked_mul(1024 * 1024)
+        .context("Disk size is too large")?;
+    anyhow::ensure!(
+        requested >= minimum,
+        "Disk size must be at least {} MiB to fit the cloud image.",
+        minimum.div_ceil(1024 * 1024)
+    );
+    Ok(())
+}
+
+fn check_skeleton(directory: &std::path::Path) -> Result<()> {
+    for entry in std::fs::read_dir(directory)
+        .with_context(|| format!("Reading guest skeleton {}", directory.display()))?
+    {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            check_skeleton(&entry.path())?;
+        } else if entry.file_type()?.is_file() {
+            std::fs::File::open(entry.path()).with_context(|| {
+                format!("Reading guest skeleton file {}", entry.path().display())
+            })?;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn create_image(
     paths: &InstancePaths,
     size_mib: usize,
