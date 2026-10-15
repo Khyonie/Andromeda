@@ -1,0 +1,35 @@
+<domain type="kvm">
+	<name>vm-alice</name>
+	<uuid>0d45f535-cfeb-48de-800d-2b0ed8bb0bca</uuid>
+	<memory unit="MiB">512</memory>
+	<vcpu>1</vcpu>
+	<os>
+		<type arch="x86_64" machine="q35">hvm</type>
+		<boot dev="hd"/>
+	</os>
+	<cpu mode="host-passthrough"/>
+	<devices>
+		<disk type="file" device="disk">
+			<driver name="qemu" type="qcow2"/>
+			<source file="/var/lib/libvirt/images/vms/vm-alice.qcow2"/>
+			<target dev="vda" bus="virtio"/>
+		</disk>
+		<disk type="file" device="cdrom">
+			<driver name="qemu" type="raw"/>
+			<source file="/var/lib/libvirt/images/seed/vm-alice.iso"/>
+			<target dev="sda" bus="sata"/>
+			<readonly/>
+		</disk>
+		<interface type="network">
+			<mac address="52:54:00:10:00:01"/>
+			<source network="andromeda-users"/>
+			<model type="virtio"/>
+		</interface>
+		<console type="pty">
+			<target type="serial" port="0"/>
+		</console>
+		<channel type="unix">
+			<target type="virtio" name="org.qemu.guest_agent.0"/>
+		</channel>
+	</devices>
+</domain>
