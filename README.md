@@ -1,5 +1,7 @@
 # Andromeda
 
+[![CI](https://github.com/Khyonie/Andromeda/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/Khyonie/Andromeda/actions/workflows/ci.yml)
+
 A web tool for provisioning and managing libvirt virtual machines.
 
 <img width="2101" height="1013" alt="image-6" src="https://github.com/user-attachments/assets/ce82e687-42c2-4058-9cbb-2e311277ed1e" />
